@@ -79,24 +79,33 @@ can_driver_node:
   # --------------------------------------------------------------------------
   joints:
 
+    # --- 机械臂前两轴（MT 协议，位置模式）---
+    # 机械臂统一归到 can1；旋转台与大臂也由 can_driver 托管。
+
+    - name: shoulder_yaw_joint
+      motor_id: 0x145
+      protocol: MT
+      can_device: can1
+      control_mode: position
+      position_scale: 1.7453292519943296e-04
+      velocity_scale: 1.7453292519943296e-04
+      direction_sign: 1.0
+
+    - name: shoulder_pitch_joint
+      motor_id: 0x146
+      protocol: MT
+      can_device: can1
+      control_mode: position
+      position_scale: 1.7453292519943296e-04
+      velocity_scale: 1.7453292519943296e-04
+      direction_sign: 1.0
+
     # # --- 机械臂关节（PP 协议，CSP 模式）---
     # # 使用 PP 协议（EyouCan），CSP 周期同步位置模式
     # # 驱动启动时自动调用 setMode(CSP)，失败则中止初始化
 
-    # - name: shoulder_pitch_joint  # 大臂俯仰（第 2 轴）
-    #   motor_id: 0x05
-    #   protocol: PP
-    #   can_device: can0
-    #   control_mode: csp
-    #   position_scale: 65536  # 16-bit 编码器，PPR → 驱动自动换算为 2π/65536 rad/count
-    #   velocity_scale: 65536
-    #   ip_max_velocity: 1.0
-    #   ip_max_acceleration: 2.0
-    #   ip_max_jerk: 10.0
-    #   ip_goal_tolerance: 0.001
-
     - name: elbow_pitch_joint   # 小臂俯仰（第 3 轴）
-      motor_id: 0x13
+      motor_id: 0x1F
       protocol: PP
       can_device: can1
       control_mode: csp
@@ -110,7 +119,7 @@ can_driver_node:
 
 
     - name: wrist_pitch_joint    # 腕部俯仰（第 4 轴）
-      motor_id: 0x14
+      motor_id: 0x20
       protocol: PP
       can_device: can1
       control_mode: csp
@@ -122,7 +131,7 @@ can_driver_node:
       ip_goal_tolerance: 0.001
 
     - name: wrist_roll_joint     # 腕部滚转（第 5 轴）
-      motor_id: 0x16
+      motor_id: 0x21
       protocol: PP
       can_device: can1
       control_mode: csp
@@ -130,7 +139,7 @@ can_driver_node:
       velocity_scale: 65536
 
     - name: wrist_yaw_joint      # 腕部偏航（第 6 轴）
-      motor_id: 0x15
+      motor_id: 0x22
       protocol: PP
       can_device: can1
       control_mode: csp
@@ -139,32 +148,38 @@ can_driver_node:
       direction_sign: -1.0
 
     - name: left_gripper_finger_joint  # 左夹爪（第 7 轴）
-      motor_id: 0x17
+      motor_id: 0x1E
       protocol: PP
       can_device: can1
       control_mode: csp
       position_scale: 65536  # 16-bit 编码器，PPR → 驱动自动换算为 2π/65536 rad/count
       velocity_scale: 65536
 
-    # --- 底盘履带关节（DM 协议，速度模式）---
-    # 达妙履带只作为 velocity 语义关节接入，由协议后端自行决定具体报文格式。
+    # --- 底盘前轮关节（MT 协议，默认速度模式，兼容 MIT 位置模式）---
+    # 底盘前轮统一归到 can0；运行时默认使用 velocity 语义，
+    # 单电机联调时可切到 MT MIT 位置模式。
 
     - name: left_front_wheel_joint
-      motor_id: 0x01
-      protocol: DM
-      can_device: can1
+      motor_id: 0x141
+      protocol: MT
+      can_device: can0
       control_mode: velocity
+      position_scale: 1.7453292519943296e-04
+      velocity_scale: 1.7453292519943296e-04
       direction_sign: 1.0
 
     - name: right_front_wheel_joint
-      motor_id: 0x02
-      protocol: DM
-      can_device: can1
+      motor_id: 0x14B
+      protocol: MT
+      can_device: can0
       control_mode: velocity
+      position_scale: 1.7453292519943296e-04
+      velocity_scale: 1.7453292519943296e-04
       direction_sign: -1.0
 
     # --- 可选 ECB 关节（仍然走标准 can_driver.yaml / can_driver.launch）---
     # 是否启用 ECB 由 joint 自身的 protocol: ECB 决定，不再单独维护专用配置文件。
+    # ECB 走 ecb:// 网络设备，不占用 can0/can1；仅在未来存在 ECB-CAN 变体时再按 can0 归类。
     # 若当前机器只接 ECB，请在本标准 joints 列表中保留 ECB 条目，并移除/注释未接入的 SocketCAN 关节。
     # ECB_AUTO_PROBE_BEGIN
     - name: ecb_joint_02

@@ -172,7 +172,7 @@ TEST_F(MtCanTest, SetPositionEncodesExpectedFrame)
 
     const auto &frame = transport->sentFrames[0];
     // MT 位置命令 0xA4：携带速度上限（data[2..3]）和目标位置（data[4..7]）。
-    EXPECT_EQ(frame.id, 0x142u);
+    EXPECT_EQ(frame.id, 0x14Bu);
     EXPECT_EQ(frame.dlc, 8u);
     EXPECT_EQ(frame.data[0], 0xA4);
     // 当前实现会把 setVelocity 的 0.01 dps/LSB 换算到 0xA4 所需的 1 dps/LSB。

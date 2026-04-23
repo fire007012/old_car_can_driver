@@ -95,6 +95,9 @@ roslaunch can_driver can_driver.launch
 # 查看 profile
 rosrun can_driver mt_motor_interface.py --profile car_a --action list
 
+# 查看当前运行时已加载的 MT joints（带 can_device 匹配标记）
+rosrun can_driver mt_motor_interface.py --profile car_a --action discover
+
 # 使能 + 速度模式 + 下发速度
 rosrun can_driver mt_motor_interface.py --profile car_a --action enable   --motor-id 0x141
 rosrun can_driver mt_motor_interface.py --profile car_a --action mode     --motor-id 0x141 --value 1
@@ -124,7 +127,15 @@ bash scripts/test_mt_motor_motion.sh car_a auto 5.0 2.0 2.5 2.0
 ```
 
 说明：
-- `motor_id=auto` 时，脚本会按优先级自动探测：`0x141 -> 0x14B`。
+- `motor_id=auto` 时，脚本会优先读取运行时 `/can_driver_node/joints` 中的 MT 电机 ID；
+  若运行时不可读，则回退 `profile.mt_motor_ids`，最后再回退默认 `0x141/0x14B`。
+- 脚本会在测试前自动确保生命周期进入 `Running`：
+  - 若 `Faulted`：执行 `recover`
+  - 若 `Inactive/Configured`：执行 `init`
+  - 若 `Standby`：执行 `enable`
+  - 若 `Armed`：执行 `resume`
+- 若 profile 中 `can_device` 不适用现场，可通过环境变量覆盖：
+  `MT_TEST_INIT_DEVICE=can0`（必要时也可设 `MT_TEST_DRIVER_NS=/can_driver_node`）
 - `pos_rad` 建议先用 `2.0~3.0`，位移更明显。
 - `mit_hold_sec` 是每个 MIT 位置点的停留时间（秒）。
 - 脚本会在 `mit_hold_sec` 内持续流式发送 MIT 位置命令（默认 20Hz），比单次下发更容易观察到动作。
@@ -163,6 +174,19 @@ MT_TEST_MIT_STREAM_HZ=30 bash scripts/test_mt_motor_motion.sh car_a 0x141 5.0 2.
 ```
 
 ## 5. 常见问题：脚本显示 OK 但电机不转
+
+### 5.0 常见问题：脚本提示找不到 motor id
+
+先执行：
+
+```bash
+rosrun can_driver mt_motor_interface.py --profile car_a --action discover
+```
+
+检查点：
+- 目标 ID 是否出现在输出中；
+- `joint` 对应条目的 `protocol` 是否为 `MT`；
+- `can_device` 是否与当前 profile 一致（脚本/接口已支持不一致时按 `motor_id` 退化匹配，但建议最终对齐配置）。
 
 优先检查 [config/can_driver.yaml](config/can_driver.yaml) 中 MT 关节的缩放参数是否已配置：
 

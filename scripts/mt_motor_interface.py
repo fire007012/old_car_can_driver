@@ -5,7 +5,7 @@ import argparse
 import os
 import sys
 import time
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 import rospkg
 import rospy
@@ -68,28 +68,63 @@ class MtMotorInterface:
             raise RuntimeError(f"参数格式错误(非列表): {self.joints_param}")
         return joints
 
-    def resolve_joint_name(self, motor_id: int, joint_name_override: str = "") -> str:
-        if joint_name_override:
-            return joint_name_override
-
+    def discover_mt_joints(self) -> List[Dict[str, Any]]:
         can_device_expect = str(self.profile.get("can_device", ""))
         joints = self._load_joints()
+        discovered: List[Dict[str, Any]] = []
         for j in joints:
             if not isinstance(j, dict):
                 continue
             if normalize_protocol(j.get("protocol", "")) != "MT":
                 continue
-
             jid = parse_joint_motor_id(j.get("motor_id"))
-            if jid != motor_id:
+            if jid is None:
                 continue
+            can_device = str(j.get("can_device", ""))
+            discovered.append(
+                {
+                    "motor_id": jid,
+                    "name": str(j.get("name", "")),
+                    "can_device": can_device,
+                    "device_match": (not can_device_expect) or (can_device == can_device_expect),
+                }
+            )
+        discovered.sort(key=lambda item: int(item["motor_id"]))
+        return discovered
 
-            if can_device_expect and str(j.get("can_device", "")) != can_device_expect:
-                continue
+    def resolve_joint_name(self, motor_id: int, joint_name_override: str = "") -> str:
+        if joint_name_override:
+            return joint_name_override
 
-            name = j.get("name", "")
-            if isinstance(name, str) and name:
-                return name
+        can_device_expect = str(self.profile.get("can_device", ""))
+        discovered = self.discover_mt_joints()
+
+        # 优先：ID + can_device 精确匹配
+        for item in discovered:
+            if item["motor_id"] == motor_id and item["device_match"]:
+                name = item["name"]
+                if name:
+                    return name
+
+        # 兼容：若 profile 的 can_device 已变化，允许按 ID 退化匹配。
+        fallback = [item for item in discovered if item["motor_id"] == motor_id and item["name"]]
+        if len(fallback) == 1:
+            selected = fallback[0]
+            rospy.logwarn(
+                "[MT-IF] profile can_device=%s 与运行时关节 can_device=%s 不一致，"
+                "按 motor_id=0x%X 退化匹配 joint=%s。",
+                can_device_expect,
+                selected["can_device"],
+                motor_id,
+                selected["name"],
+            )
+            return selected["name"]
+
+        if len(fallback) > 1:
+            raise RuntimeError(
+                f"motor_id={hex(motor_id)} 在 {self.joints_param} 中存在多个 MT 关节同名候选，"
+                "请使用 --joint 指定。"
+            )
 
         raise RuntimeError(
             f"无法在 {self.joints_param} 中找到 MT 关节: motor_id={hex(motor_id)} "
@@ -135,9 +170,12 @@ class MtMotorInterface:
             except (ValueError, TypeError):
                 continue
         if normalized and motor_id not in normalized:
-            raise RuntimeError(
-                f"motor_id={hex(motor_id)} 不在 profile '{self.profile_name}' 允许列表中: "
-                f"{[hex(i) for i in sorted(normalized)]}"
+            rospy.logwarn(
+                "[MT-IF] motor_id=0x%X 不在 profile '%s' 的 mt_motor_ids 中: %s，"
+                "继续执行（兼容适配后的现场配置）。",
+                motor_id,
+                self.profile_name,
+                [hex(i) for i in sorted(normalized)],
             )
 
 
@@ -147,7 +185,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument(
         "--action",
         required=True,
-        choices=["enable", "disable", "stop", "mode", "velocity", "position", "list"],
+        choices=["enable", "disable", "stop", "mode", "velocity", "position", "list", "discover"],
         help="控制动作",
     )
     p.add_argument("--motor-id", default="0x141", help="目标电机ID，支持十进制/十六进制")
@@ -203,6 +241,19 @@ def main() -> int:
     iface = MtMotorInterface(args.profile, profiles[args.profile], args.driver_ns)
 
     try:
+        if args.action == "discover":
+            joints = iface.discover_mt_joints()
+            if not joints:
+                print("[MT-IF] 未发现 MT joints")
+                return 0
+            for item in joints:
+                marker = "*" if item["device_match"] else " "
+                print(
+                    f"{marker} motor_id=0x{int(item['motor_id']):X} "
+                    f"joint={item['name']} can_device={item['can_device']}"
+                )
+            return 0
+
         iface.check_motor_in_profile(motor_id)
 
         if args.action == "enable":

@@ -11,7 +11,7 @@
  */
 enum class MotorID : std::uint16_t {
     LeftWheel = 0x141,
-    RightWheel = 0x142,
+    RightWheel = 0x14B,
     
     RotaryTable = 0x6,
     LargerArm = 0x5,
@@ -19,7 +19,7 @@ enum class MotorID : std::uint16_t {
     WristX = 0x14,
     WristY = 0x15,
     WristZ = 0x16,
-    Actuator = 0x17,
+    Actuator = 0x1E,
 
     PTZ1 = 0x21,
     PTZ2 = 0x22,
@@ -36,7 +36,7 @@ enum class MotorID : std::uint16_t {
 //     Arm4 = 0x14,
 //     Arm5 = 0x15,
 //     Arm6 = 0x16,
-//     TailEnd = 0x17,
+//     TailEnd = 0x1E,
 
 // };
 
@@ -55,7 +55,7 @@ enum class MotorID : std::uint16_t {
 // enum class MTMotorID : std::uint16_t {
 
 //     MainWheel1 = 0x141,
-//     MainWheel2 = 0x142,
+//     MainWheel2 = 0x14B,
 
 //     PTZ1 = 0x21,
 //     PTZ2 = 0x22,

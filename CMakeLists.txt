@@ -228,6 +228,7 @@ target_link_libraries(can_driver_node
 catkin_install_python(PROGRAMS
   scripts/realtime_motor_ui.py
   scripts/mt_motor_interface.py
+  scripts/socketcan_scan_ids.py
   DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
 )
 

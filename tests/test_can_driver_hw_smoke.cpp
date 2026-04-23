@@ -2849,6 +2849,44 @@ TEST_F(CanDriverHWSmokeTest, SetModeServiceRejectsWhileEnabled)
     spinner.stop();
 }
 
+TEST_F(CanDriverHWSmokeTest, SetModeServiceAllowsMtSwitchWhileEnabledWithoutFreshPositionFeedback)
+{
+    auto fakeDm = std::make_shared<FakeDeviceManager>();
+    CanDriverHW hw(fakeDm);
+
+    ros::NodeHandle nh;
+    ros::NodeHandle pnh(uniqueNs("can_driver_hw_smoke_set_mode_mt_enabled_allowed"));
+
+    pnh.setParam("joints", makeSingleVelocityJoint());
+    pnh.setParam("motor_state_period_sec", 0.05);
+
+    ASSERT_TRUE(hw.init(nh, pnh));
+    enterRunning(hw);
+
+    ros::AsyncSpinner spinner(1);
+    spinner.start();
+
+    ros::ServiceClient client = nh.serviceClient<can_driver::MotorCommand>(
+        pnh.resolveName("motor_command"));
+    ASSERT_TRUE(client.waitForExistence(ros::Duration(1.0)));
+
+    // 仅给 enabled 反馈，不给 positionValid，新逻辑下 MT 切模式应允许通过。
+    setFreshEnabledFeedback(*fakeDm, "fake0", CanType::MT, static_cast<MotorID>(0x141), true);
+
+    can_driver::MotorCommand setModeSrv;
+    setModeSrv.request.motor_id = 0x141u;
+    setModeSrv.request.command = can_driver::MotorCommand::Request::CMD_SET_MODE;
+    setModeSrv.request.value = 0.0;
+    ASSERT_TRUE(client.call(setModeSrv));
+    EXPECT_TRUE(setModeSrv.response.success) << setModeSrv.response.message;
+    EXPECT_EQ(fakeDm->protocol()->setModeCalls(), 1);
+    EXPECT_EQ(fakeDm->protocol()->lastModeMotor(), 0x141u);
+    EXPECT_EQ(fakeDm->protocol()->lastMode(), CanProtocol::MotorMode::Position);
+    EXPECT_EQ(fakeDm->protocol()->positionCalls(), 0);
+
+    spinner.stop();
+}
+
 TEST_F(CanDriverHWSmokeTest, ResumeAllowsAlignedCspTargetWithoutCommandChange)
 {
     auto fakeDm = std::make_shared<FakeDeviceManager>();

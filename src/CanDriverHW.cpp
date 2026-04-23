@@ -116,6 +116,7 @@ bool CanDriverHW::init(ros::NodeHandle &nh,
 {
     (void)nh;
     resetInternalState();
+    warnOnDuplicateMotorIds_ = options.warn_on_duplicate_motor_ids;
     if (!loadRuntimeParams(pnh)) {
         return false;
     }
@@ -613,8 +614,9 @@ bool CanDriverHW::parseAndSetupJoints(const ros::NodeHandle &pnh)
     }
 
     std::set<std::string> seenJointNames;
-    std::set<uint16_t> seenMotorIds;
+    std::unordered_map<uint16_t, std::string> firstJointNameByMotorId;
     std::set<std::tuple<std::string, CanType, std::uint8_t>> seenProtocolNodes;
+    bool hasDuplicateMotorId = false;
     for (const auto &p : parsed) {
         const std::string &jointName = p.name;
         const uint16_t motorId = static_cast<uint16_t>(p.motorId);
@@ -624,11 +626,18 @@ bool CanDriverHW::parseAndSetupJoints(const ros::NodeHandle &pnh)
             ROS_ERROR("[CanDriverHW] Duplicate joint name '%s' in joints config.", jointName.c_str());
             return false;
         }
-        if (!seenMotorIds.insert(motorId).second) {
-            ROS_ERROR("[CanDriverHW] Duplicate motor_id=%u in joints config. "
-                      "motor_id must be globally unique because service commands are addressed by motor_id only.",
-                      static_cast<unsigned>(motorId));
-            return false;
+        const auto firstJointIt = firstJointNameByMotorId.find(motorId);
+        if (firstJointIt != firstJointNameByMotorId.end()) {
+            hasDuplicateMotorId = true;
+            if (warnOnDuplicateMotorIds_) {
+                ROS_WARN("[CanDriverHW] Duplicate motor_id=%u in joints config: '%s' and '%s'. "
+                         "Startup will continue, but motor_id based maintenance services become ambiguous for this id.",
+                         static_cast<unsigned>(motorId),
+                         firstJointIt->second.c_str(),
+                         jointName.c_str());
+            }
+        } else {
+            firstJointNameByMotorId.emplace(motorId, jointName);
         }
         if (!seenProtocolNodes.emplace(p.canDevice, p.protocol, protocolNodeId).second) {
             ROS_ERROR("[CanDriverHW] Joint '%s' aliases protocol node id 0x%02X on device '%s' "
@@ -665,6 +674,11 @@ bool CanDriverHW::parseAndSetupJoints(const ros::NodeHandle &pnh)
 
         joints_.push_back(jc);
         jointIndexByName_[jc.name] = joints_.size() - 1;
+    }
+
+    if (hasDuplicateMotorId && warnOnDuplicateMotorIds_) {
+        ROS_WARN("[CanDriverHW] Duplicate motor_id detected. "
+                 "Robot HW init continues, but motor_id based service operations are disabled for ambiguous ids.");
     }
 
     rebuildJointGroups();
@@ -953,11 +967,26 @@ bool CanDriverHW::lookupJointByMotorId(uint16_t motorId,
     if (joint == nullptr) {
         return false;
     }
+    const JointConfig *matched = nullptr;
+    std::size_t matchCount = 0;
     for (const auto &candidate : joints_) {
         if (static_cast<uint16_t>(candidate.motorId) == motorId) {
-            *joint = candidate;
-            return true;
+            ++matchCount;
+            if (matched == nullptr) {
+                matched = &candidate;
+            }
         }
+    }
+    if (matchCount == 1 && matched != nullptr) {
+        *joint = *matched;
+        return true;
+    }
+    if (matchCount > 1) {
+        ROS_ERROR_THROTTLE(2.0,
+                           "[CanDriverHW] motor_id=%u is ambiguous (%zu joints share this id). "
+                           "Rejecting motor_id-based maintenance request.",
+                           static_cast<unsigned>(motorId),
+                           matchCount);
     }
     return false;
 }
@@ -976,21 +1005,35 @@ void CanDriverHW::clearDirectCommand(const std::string &jointName)
 bool CanDriverHW::commitModeSwitch(uint16_t motorId, can_driver::AxisControlMode mode)
 {
     std::lock_guard<std::mutex> lock(jointStateMutex_);
+    std::size_t matchedIndex = joints_.size();
+    std::size_t matchCount = 0;
     for (std::size_t i = 0; i < joints_.size(); ++i) {
-        auto &joint = joints_[i];
-        if (static_cast<uint16_t>(joint.motorId) != motorId) {
+        if (static_cast<uint16_t>(joints_[i].motorId) != motorId) {
             continue;
         }
-        joint.controlMode = can_driver::axisControlModeName(mode);
-        joint.hasDirectPosCmd = false;
-        joint.hasDirectVelCmd = false;
-        joint.posCmd = joint.pos;
-        joint.velCmd = 0.0;
-        joint.requireCommandAlignment = true;
-        commandValidBuffer_[i] = 0;
-        return true;
+        ++matchCount;
+        if (matchedIndex == joints_.size()) {
+            matchedIndex = i;
+        }
     }
-    return false;
+    if (matchCount != 1 || matchedIndex >= joints_.size()) {
+        if (matchCount > 1) {
+            ROS_ERROR("[CanDriverHW] Reject mode switch for ambiguous motor_id=%u (%zu matches).",
+                      static_cast<unsigned>(motorId),
+                      matchCount);
+        }
+        return false;
+    }
+
+    auto &joint = joints_[matchedIndex];
+    joint.controlMode = can_driver::axisControlModeName(mode);
+    joint.hasDirectPosCmd = false;
+    joint.hasDirectVelCmd = false;
+    joint.posCmd = joint.pos;
+    joint.velCmd = 0.0;
+    joint.requireCommandAlignment = true;
+    commandValidBuffer_[matchedIndex] = 0;
+    return true;
 }
 
 bool CanDriverHW::getZeroOffset(uint16_t motorId, double* zeroOffset) const
@@ -999,6 +1042,19 @@ bool CanDriverHW::getZeroOffset(uint16_t motorId, double* zeroOffset) const
         return false;
     }
     std::lock_guard<std::mutex> lock(jointStateMutex_);
+    std::size_t matchCount = 0;
+    for (const auto &joint : joints_) {
+        if (static_cast<uint16_t>(joint.motorId) == motorId) {
+            ++matchCount;
+        }
+    }
+    if (matchCount > 1) {
+        ROS_ERROR_THROTTLE(2.0,
+                           "[CanDriverHW] Reject zero-offset query for ambiguous motor_id=%u (%zu matches).",
+                           static_cast<unsigned>(motorId),
+                           matchCount);
+        return false;
+    }
     const auto it = jointZeroOffsetRadByMotorId_.find(motorId);
     if (it == jointZeroOffsetRadByMotorId_.end()) {
         *zeroOffset = 0.0;
@@ -1013,6 +1069,22 @@ bool CanDriverHW::commitZero(uint16_t motorId,
                              double previousZeroOffset)
 {
     std::lock_guard<std::mutex> lock(jointStateMutex_);
+    std::size_t matchCount = 0;
+    for (auto &joint : joints_) {
+        if (static_cast<uint16_t>(joint.motorId) != motorId) {
+            continue;
+        }
+        ++matchCount;
+    }
+    if (matchCount != 1) {
+        if (matchCount > 1) {
+            ROS_ERROR("[CanDriverHW] Reject zero-offset commit for ambiguous motor_id=%u (%zu matches).",
+                      static_cast<unsigned>(motorId),
+                      matchCount);
+        }
+        return false;
+    }
+
     for (auto &joint : joints_) {
         if (static_cast<uint16_t>(joint.motorId) != motorId) {
             continue;
@@ -1033,6 +1105,21 @@ bool CanDriverHW::commitLimits(uint16_t motorId,
                                double zeroOffset)
 {
     std::lock_guard<std::mutex> lock(jointStateMutex_);
+    std::size_t matchCount = 0;
+    for (const auto &joint : joints_) {
+        if (static_cast<uint16_t>(joint.motorId) == motorId) {
+            ++matchCount;
+        }
+    }
+    if (matchCount != 1) {
+        if (matchCount > 1) {
+            ROS_ERROR("[CanDriverHW] Reject limits commit for ambiguous motor_id=%u (%zu matches).",
+                      static_cast<unsigned>(motorId),
+                      matchCount);
+        }
+        return false;
+    }
+
     for (auto &joint : joints_) {
         if (static_cast<uint16_t>(joint.motorId) != motorId) {
             continue;

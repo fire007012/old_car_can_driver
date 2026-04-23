@@ -1,6 +1,6 @@
 # can_driver
 
-`can_driver` 是基于 SocketCAN 的 ROS1 电机驱动包，负责把私有 CAN 协议设备接入 `ros_control`，并提供生命周期服务、直连调试接口、协议适配和测试工具。当前同时覆盖 `MT`、`PP` 和达妙履带 `DM` 后端。
+`can_driver` 是基于 SocketCAN 的 ROS1 电机驱动包，负责把私有 CAN 协议设备接入 `ros_control`，并提供生命周期服务、直连调试接口、协议适配和测试工具。当前同时覆盖 `MT`、`PP` 和 `DM` 后端；其中当前整车前轮/底盘主电机执行基线已切到 `MT`，`DM` 仅保留为兼容后端能力与历史接入文档参考。
 
 ## 包结构
 
@@ -166,4 +166,5 @@ rosservice call /can_driver_node/set_zero_limit "{motor_id: 1}"
   - `docs/配置文件字段详解与从零配置指南.md`
   - `docs/使用指南.md`
   - `docs/架构设计.md`
-  - `docs/达妙履带接入说明.md`
+  - `docs/MT_MIT模式接入说明.md`
+  - `docs/达妙履带接入说明.md`（历史 DM 接入说明，非当前前轮执行基线）

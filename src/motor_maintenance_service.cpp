@@ -42,6 +42,13 @@ bool decodeModeSelection(double value, ModeSelection *selection)
     return false;
 }
 
+bool modeSwitchRequiresDisabledAxis(CanType protocol)
+{
+    // MT/DM 侧的 mode 切换主要用于驱动本地语义路由，不要求先失能。
+    // PP/ECB 仍保留“先失能再改模式”的硬约束，避免在线切环引发突跳。
+    return protocol == CanType::PP || protocol == CanType::ECB;
+}
+
 } // namespace
 
 namespace {
@@ -176,12 +183,14 @@ bool MotorMaintenanceService::handleSetModeRequest(const JointConfig &target,
         }
         return false;
     }
-    if (!requireAxisDisabledForConfiguration_ ||
-        !requireAxisDisabledForConfiguration_(target, "Mode switch", message)) {
-        if (message != nullptr && message->empty()) {
-            *message = "Mode switch requires the motor to be disabled first.";
+    if (modeSwitchRequiresDisabledAxis(target.protocol)) {
+        if (!requireAxisDisabledForConfiguration_ ||
+            !requireAxisDisabledForConfiguration_(target, "Mode switch", message)) {
+            if (message != nullptr && message->empty()) {
+                *message = "Mode switch requires the motor to be disabled first.";
+            }
+            return false;
         }
-        return false;
     }
 
     const auto status = motorActionExecutor_->execute(
@@ -217,50 +226,67 @@ bool MotorMaintenanceService::handleSetModeRequest(const JointConfig &target,
     }
 
     int32_t preloadRaw = 0;
+    bool shouldPreload = true;
     if (selection.mode != CanProtocol::MotorMode::Velocity) {
         if (!getFreshAxisFeedback_) {
-            if (message != nullptr) {
-                *message = "Current position feedback unavailable or stale for mode preload.";
+            if (target.protocol == CanType::MT) {
+                // MT 在无新鲜位置反馈时允许跳过 preload，由后续显式位置指令接管。
+                shouldPreload = false;
+            } else {
+                if (message != nullptr) {
+                    *message = "Current position feedback unavailable or stale for mode preload.";
+                }
+                return false;
             }
-            return false;
-        }
-        can_driver::SharedDriverState::AxisFeedbackState feedback;
-        if (!getFreshAxisFeedback_(targetSnapshot, &feedback) || !feedback.positionValid) {
-            if (message != nullptr) {
-                *message = "Current position feedback unavailable or stale for mode preload.";
+        } else {
+            can_driver::SharedDriverState::AxisFeedbackState feedback;
+            if (!getFreshAxisFeedback_(targetSnapshot, &feedback) || !feedback.positionValid) {
+                if (target.protocol == CanType::MT) {
+                    // MT 场景允许无新鲜反馈切环，避免“能控但切不了模式”。
+                    shouldPreload = false;
+                } else {
+                    if (message != nullptr) {
+                        *message = "Current position feedback unavailable or stale for mode preload.";
+                    }
+                    return false;
+                }
+            } else {
+                preloadRaw = can_driver::safe_command::clampToInt32(feedback.position);
             }
-            return false;
         }
-        preloadRaw = can_driver::safe_command::clampToInt32(feedback.position);
     }
 
-    const auto preloadStatus = motorActionExecutor_->execute(
-        makeMotorTarget(targetSnapshot),
-        [selection, preloadRaw](const std::shared_ptr<CanProtocol> &proto, MotorID id) {
-            switch (selection.mode) {
-            case CanProtocol::MotorMode::Position:
-                return proto->setPosition(id, preloadRaw);
-            case CanProtocol::MotorMode::Velocity:
-                return proto->setVelocity(id, 0);
-            case CanProtocol::MotorMode::CSP:
-                return proto->quickSetPosition(id, preloadRaw);
+    if (shouldPreload) {
+        const auto preloadStatus = motorActionExecutor_->execute(
+            makeMotorTarget(targetSnapshot),
+            [selection, preloadRaw](const std::shared_ptr<CanProtocol> &proto, MotorID id) {
+                switch (selection.mode) {
+                case CanProtocol::MotorMode::Position:
+                    return proto->setPosition(id, preloadRaw);
+                case CanProtocol::MotorMode::Velocity:
+                    return proto->setVelocity(id, 0);
+                case CanProtocol::MotorMode::CSP:
+                    return proto->quickSetPosition(id, preloadRaw);
+                }
+                return false;
+            },
+            "Preload mode command");
+        if (preloadStatus != MotorActionExecutor::Status::Ok) {
+            if (message != nullptr) {
+                if (preloadStatus == MotorActionExecutor::Status::DeviceNotReady) {
+                    *message = "CAN device not ready.";
+                } else if (preloadStatus == MotorActionExecutor::Status::ProtocolUnavailable) {
+                    *message = "Protocol not available.";
+                } else if (preloadStatus == MotorActionExecutor::Status::Rejected) {
+                    *message = "Set mode preload command rejected.";
+                } else {
+                    *message = "Command execution failed.";
+                }
+            } else {
+                return false;
             }
             return false;
-        },
-        "Preload mode command");
-    if (preloadStatus != MotorActionExecutor::Status::Ok) {
-        if (message != nullptr) {
-            if (preloadStatus == MotorActionExecutor::Status::DeviceNotReady) {
-                *message = "CAN device not ready.";
-            } else if (preloadStatus == MotorActionExecutor::Status::ProtocolUnavailable) {
-                *message = "Protocol not available.";
-            } else if (preloadStatus == MotorActionExecutor::Status::Rejected) {
-                *message = "Set mode preload command rejected.";
-            } else {
-                *message = "Command execution failed.";
-            }
         }
-        return false;
     }
 
     if (!commitModeSwitch_(motorId, selection.controlMode)) {

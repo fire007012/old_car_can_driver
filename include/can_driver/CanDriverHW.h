@@ -55,6 +55,7 @@ class CanDriverHW : public hardware_interface::RobotHW {
 public:
     struct InitOptions {
         bool enable_ros_endpoints{true};
+        bool warn_on_duplicate_motor_ids{true};
     };
 
     struct DirectCommandEndpoint {
@@ -180,6 +181,7 @@ private:
     double motorQueryHz_{0.0};
     int directCmdQueueSize_{1};
     bool debugBypassRosControl_{false};
+    bool warnOnDuplicateMotorIds_{true};
     bool ppFastWriteEnabled_{false};
     double ppPositionDefaultVelocityRadS_{0.0};
     double ppCspDefaultVelocityRadS_{0.0};
