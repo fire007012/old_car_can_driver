@@ -39,6 +39,15 @@ can_driver_node:
   # 同时校验是否落在 URDF/rosparam 限位范围内；超限将拒绝激活驱动。
   startup_position_sync_timeout_sec: 1.0
 
+  # 启动探测阶段的临时查询频率（Hz）。
+  # lifecycle init 会先把设备刷新频率切到这里，尽快拿到首轮真实反馈；
+  # 对 MT 轴，位置有效依赖 0x92 多圈角度返回，频率过低时总 launch 容易在 can0 多轴场景下超时。
+  startup_probe_query_hz: 20.0
+
+  # MT 协议电机注册后下发的通讯中断保护时间（ms，对应 0xB3）。
+  # 默认 0：启动时主动清除现场误写入的 300ms，避免 can0 lifecycle 阶段因短时间未持续收到命令而进故障。
+  mt_communication_timeout_on_init_ms: 0
+
   # 安全策略：检测到故障位时自动发送一次 Stop，并阻断后续运动命令。
   # 注意：该策略不会自动 Disable，便于故障排查时保持驱动在线。
   safety_stop_on_fault: true
@@ -80,21 +89,21 @@ can_driver_node:
   joints:
 
     # --- 机械臂前两轴（MT 协议，位置模式）---
-    # 机械臂统一归到 can1；旋转台与大臂也由 can_driver 托管。
+    # 机械臂前两轴 MT 当前接到 can0；其余机械臂轴仍由 can1 托管。
 
     - name: shoulder_yaw_joint
-      motor_id: 0x145
+      motor_id: 0x143
       protocol: MT
-      can_device: can1
+      can_device: can0
       control_mode: position
       position_scale: 1.7453292519943296e-04
       velocity_scale: 1.7453292519943296e-04
       direction_sign: 1.0
 
     - name: shoulder_pitch_joint
-      motor_id: 0x146
+      motor_id: 0x144
       protocol: MT
-      can_device: can1
+      can_device: can0
       control_mode: position
       position_scale: 1.7453292519943296e-04
       velocity_scale: 1.7453292519943296e-04
@@ -169,7 +178,7 @@ can_driver_node:
       direction_sign: 1.0
 
     - name: right_front_wheel_joint
-      motor_id: 0x14B
+      motor_id: 0x142
       protocol: MT
       can_device: can0
       control_mode: velocity

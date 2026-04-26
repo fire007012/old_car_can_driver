@@ -211,13 +211,23 @@ bool CanDriverHW::loadRuntimeParams(const ros::NodeHandle &pnh)
         startupPositionSyncTimeoutSec_ = 1.0;
     }
     if (!pnh.getParam("startup_probe_query_hz", startupProbeQueryHz_)) {
-        startupProbeQueryHz_ = 5.0;
+        startupProbeQueryHz_ = 20.0;
     }
     if (!std::isfinite(startupProbeQueryHz_) || startupProbeQueryHz_ <= 0.0) {
-        ROS_WARN("[CanDriverHW] Invalid startup_probe_query_hz=%.9g, fallback to 5.0 Hz.",
+        ROS_WARN("[CanDriverHW] Invalid startup_probe_query_hz=%.9g, fallback to 20.0 Hz.",
                  startupProbeQueryHz_);
-        startupProbeQueryHz_ = 5.0;
+        startupProbeQueryHz_ = 20.0;
     }
+    int mtCommunicationTimeoutOnInitMs = 0;
+    if (!pnh.getParam("mt_communication_timeout_on_init_ms", mtCommunicationTimeoutOnInitMs)) {
+        mtCommunicationTimeoutOnInitMs = 0;
+    }
+    if (mtCommunicationTimeoutOnInitMs < 0) {
+        ROS_WARN("[CanDriverHW] Invalid mt_communication_timeout_on_init_ms=%d, fallback to 0 ms.",
+                 mtCommunicationTimeoutOnInitMs);
+        mtCommunicationTimeoutOnInitMs = 0;
+    }
+    mtCommunicationTimeoutOnInitMs_ = static_cast<uint32_t>(mtCommunicationTimeoutOnInitMs);
     if (!pnh.getParam("safety_feedback_freshness_timeout_sec",
                       safetyFeedbackFreshnessTimeoutSec_)) {
         safetyFeedbackFreshnessTimeoutSec_ = 0.5;
@@ -292,6 +302,7 @@ bool CanDriverHW::loadRuntimeParams(const ros::NodeHandle &pnh)
 
     deviceManager_->setPpFastWriteEnabled(ppFastWriteEnabled_);
     deviceManager_->setRefreshRateHz(motorQueryHz_);
+    deviceManager_->setMtCommunicationTimeoutOnInitMs(mtCommunicationTimeoutOnInitMs_);
     lifecycleDriverOps_.setFeedbackFreshnessTimeoutNs(
         static_cast<std::int64_t>(safetyFeedbackFreshnessTimeoutSec_ * 1e9));
 
@@ -308,6 +319,8 @@ bool CanDriverHW::loadRuntimeParams(const ros::NodeHandle &pnh)
              startupPositionSyncTimeoutSec_);
     ROS_INFO("[CanDriverHW] startup_probe_query_hz=%.3f Hz.",
              startupProbeQueryHz_);
+    ROS_INFO("[CanDriverHW] mt_communication_timeout_on_init_ms=%u.",
+             mtCommunicationTimeoutOnInitMs_);
     ROS_INFO("[CanDriverHW] safety_feedback_freshness_timeout_sec=%.3f s.",
              safetyFeedbackFreshnessTimeoutSec_);
     ROS_INFO("[CanDriverHW] safety_stop_on_fault=%s, safety_require_enabled_for_motion=%s, "

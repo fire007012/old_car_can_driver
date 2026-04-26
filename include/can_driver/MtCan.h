@@ -127,6 +127,8 @@ public:
 
     /// 设置状态轮询频率（Hz）；<=0 表示使用默认自适应周期。
     void setRefreshRateHz(double hz);
+    /// 设置电机注册后下发的通讯中断保护时间（ms）。
+    void setCommunicationTimeoutOnInit(uint32_t timeoutMs);
     /// 返回当前注册电机的建议查询周期。
     std::chrono::milliseconds refreshSleepInterval() const;
     using RefreshQuery = can_driver::MtRefreshQuery;
@@ -175,6 +177,7 @@ private:
     std::atomic<bool> shuttingDown_{false};
     mutable std::mutex pendingReadMutex_;
     std::unordered_map<uint16_t, PendingReadRequest> pendingReadRequests_;
+    std::atomic<uint32_t> communicationTimeoutOnInitMs_{0};
 
     /**
      * @brief 将节点 ID 组合成 CAN ID（高位取 canBaseId，高 8 位 + motorId）

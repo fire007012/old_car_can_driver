@@ -1,11 +1,14 @@
 #!/usr/bin/env python3
 
 import argparse
+import os
 import select
 import socket
 import struct
 import sys
 import time
+
+import yaml
 
 
 CAN_FRAME_FORMAT = "=IB3x8s"
@@ -22,6 +25,8 @@ DM_SPEED_FRAME_BASE = 0x200
 MT_SEND_FRAME_BASE = 0x140
 MT_RESPONSE_FRAME_BASE = 0x240
 MT_READ_STATE_COMMAND = 0x9C
+DEFAULT_ARM_MT_MIN_ID = 1
+DEFAULT_ARM_MT_MAX_ID = 31
 
 
 def build_can_frame(can_id, payload):
@@ -39,9 +44,17 @@ def parse_can_frame(frame_bytes):
 
 def open_socketcan(device, timeout_sec):
     sock = socket.socket(socket.AF_CAN, socket.SOCK_RAW, socket.CAN_RAW)
+    try:
+        sock.setsockopt(socket.SOL_CAN_RAW, socket.CAN_RAW_LOOPBACK, 1)
+    except OSError:
+        pass
     sock.settimeout(timeout_sec)
     sock.bind((device,))
     return sock
+
+
+def default_can_driver_config_path():
+    return os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "config", "can_driver.yaml"))
 
 
 def send_pp_probe(sock, node_id):
@@ -60,6 +73,15 @@ def send_dm_probe(sock, node_id):
 
 def send_mt_probe(sock, node_id):
     sock.send(build_can_frame(MT_SEND_FRAME_BASE + node_id, bytes((MT_READ_STATE_COMMAND,))))
+
+
+def debug_log_send(enabled, protocol, node_id, can_id, payload):
+    if not enabled:
+        return
+    payload_text = " ".join(f"{byte:02X}" for byte in payload)
+    print(
+        f"[scan][tx] protocol={protocol} node_id={node_id} can_id=0x{can_id:03X} data={payload_text}"
+    )
 
 
 def collect_responses(sock, deadline, protocol, online):
@@ -111,7 +133,7 @@ def parse_args(argv):
     parser.add_argument("--device", default="can1", help="SocketCAN device, default: can1")
     parser.add_argument(
         "--protocol",
-        choices=("pp", "mt", "dm", "both"),
+        choices=("pp", "mt", "dm", "both", "arm-mt"),
         default="both",
         help="Which protocol probes to send",
     )
@@ -134,6 +156,21 @@ def parse_args(argv):
         action="store_true",
         help="After PP discovery, query serial number for each discovered PP node",
     )
+    parser.add_argument(
+        "--show-can-id-hex",
+        action="store_true",
+        help="Print full CAN motor ID in hex for MT devices (for example 0x143)",
+    )
+    parser.add_argument(
+        "--debug-tx",
+        action="store_true",
+        help="Print each probe frame before send, useful when comparing with candump",
+    )
+    parser.add_argument(
+        "--can-driver-config",
+        default=default_can_driver_config_path(),
+        help="can_driver joints config used to print configured arm MT IDs for comparison",
+    )
     return parser.parse_args(argv)
 
 
@@ -142,6 +179,53 @@ def validate_args(args):
         raise ValueError("Require 0 <= min-id <= max-id <= 255.")
     if args.settle_ms < 0 or args.listen_ms <= 0:
         raise ValueError("settle-ms must be >= 0 and listen-ms must be > 0.")
+
+
+def normalize_protocol(protocol):
+    if protocol == "arm-mt":
+        return "mt"
+    return protocol
+
+
+def format_mt_identity(node_id, show_can_id_hex):
+    motor_id = MT_SEND_FRAME_BASE + node_id
+    if show_can_id_hex:
+        return f"node_id={node_id} motor_id=0x{motor_id:03X}"
+    return f"node_id={node_id}"
+
+
+def load_configured_mt_ids(config_path, device):
+    try:
+        with open(config_path, "r", encoding="utf-8") as f:
+            data = yaml.safe_load(f) or {}
+    except OSError:
+        return []
+    except yaml.YAMLError:
+        return []
+
+    joints = data.get("can_driver_node", {}).get("joints", [])
+    if not isinstance(joints, list):
+        return []
+
+    configured = []
+    for joint in joints:
+        if not isinstance(joint, dict):
+            continue
+        if str(joint.get("protocol", "")).strip().upper() != "MT":
+            continue
+        if str(joint.get("can_device", "")).strip() != device:
+            continue
+        try:
+            motor_id = int(joint.get("motor_id"), 0) if isinstance(joint.get("motor_id"), str) else int(joint.get("motor_id"))
+        except (TypeError, ValueError):
+            continue
+        configured.append((str(joint.get("name", "")), motor_id))
+    configured.sort(key=lambda item: item[1])
+    return configured
+
+
+def load_arm_mt_configured_ids(config_path, device):
+    return load_configured_mt_ids(config_path, device)
 
 
 def main(argv):
@@ -159,35 +243,74 @@ def main(argv):
         return 2
 
     online = {}
+    protocol = normalize_protocol(args.protocol)
     settle_sec = args.settle_ms / 1000.0
     listen_sec = args.listen_ms / 1000.0
 
+    min_id = args.min_id
+    max_id = args.max_id
+    if args.protocol == "arm-mt":
+        min_id = DEFAULT_ARM_MT_MIN_ID
+        max_id = DEFAULT_ARM_MT_MAX_ID
+
+    configured_mt = []
+    if args.protocol == "arm-mt":
+        configured_mt = load_arm_mt_configured_ids(args.can_driver_config, args.device)
+    elif protocol in ("mt", "both"):
+        configured_mt = load_configured_mt_ids(args.can_driver_config, args.device)
+
     with sock:
-        for node_id in range(args.min_id, args.max_id + 1):
-            if args.protocol in ("pp", "both"):
+        for node_id in range(min_id, max_id + 1):
+            if protocol in ("pp", "both"):
+                debug_log_send(args.debug_tx, "pp", node_id, node_id, bytes((PP_READ_COMMAND,)) )
                 send_pp_probe(sock, node_id)
-            if args.protocol in ("mt", "both"):
+            if protocol in ("mt", "both"):
+                debug_log_send(
+                    args.debug_tx,
+                    "mt",
+                    node_id,
+                    MT_SEND_FRAME_BASE + node_id,
+                    bytes((MT_READ_STATE_COMMAND,)),
+                )
                 send_mt_probe(sock, node_id)
-            if args.protocol in ("dm", "both"):
+            if protocol in ("dm", "both"):
+                debug_log_send(
+                    args.debug_tx,
+                    "dm",
+                    node_id,
+                    DM_SPEED_FRAME_BASE + node_id,
+                    struct.pack("<f", 0.0),
+                )
                 send_dm_probe(sock, node_id)
 
-            collect_responses(sock, time.monotonic() + listen_sec, args.protocol, online)
+            collect_responses(sock, time.monotonic() + listen_sec, protocol, online)
 
             if settle_sec > 0.0:
                 time.sleep(settle_sec)
 
-        if args.read_pp_serial and args.protocol in ("pp", "both"):
+        if args.read_pp_serial and protocol in ("pp", "both"):
             pp_discovered = sorted(node_id for proto, node_id in online if proto == "pp")
             for node_id in pp_discovered:
                 send_pp_serial_query(sock, node_id)
-                collect_responses(sock, time.monotonic() + listen_sec, args.protocol, online)
+                collect_responses(sock, time.monotonic() + listen_sec, protocol, online)
 
     pp_hits = sorted(node_id for proto, node_id in online if proto == "pp")
     mt_hits = sorted(node_id for proto, node_id in online if proto == "mt")
     dm_hits = sorted(node_id for proto, node_id in online if proto == "dm")
 
-    print(f"[scan] device={args.device} protocol={args.protocol} range={args.min_id}-{args.max_id}")
-    if args.protocol in ("pp", "both"):
+    print(f"[scan] device={args.device} protocol={args.protocol} range={min_id}-{max_id}")
+    if protocol in ("mt", "both"):
+        if configured_mt:
+            configured_text = ", ".join(
+                f"{name}=0x{motor_id:03X}" for name, motor_id in configured_mt
+            )
+            label = "configured arm MT IDs" if args.protocol == "arm-mt" else "configured MT IDs on device"
+            print(f"[scan] {label}: {configured_text}")
+        else:
+            label = "configured arm MT IDs" if args.protocol == "arm-mt" else "configured MT IDs on device"
+            print(f"[scan] {label}: none")
+
+    if protocol in ("pp", "both"):
         if pp_hits:
             print("[scan] PP online IDs:", ", ".join(str(node_id) for node_id in pp_hits))
             for node_id in pp_hits:
@@ -204,9 +327,13 @@ def main(argv):
         else:
             print("[scan] PP online IDs: none")
 
-    if args.protocol in ("mt", "both"):
+    if protocol in ("mt", "both"):
         if mt_hits:
-            print("[scan] MT online IDs:", ", ".join(str(node_id) for node_id in mt_hits))
+            summary = ", ".join(
+                f"0x{MT_SEND_FRAME_BASE + node_id:03X}" if args.show_can_id_hex else str(node_id)
+                for node_id in mt_hits
+            )
+            print("[scan] MT online IDs:", summary)
             for node_id in mt_hits:
                 entry = online[("mt", node_id)]
                 replies = sorted(entry.get("replies", set()))
@@ -221,11 +348,35 @@ def main(argv):
                 if "encoder_raw" in entry:
                     details.append(f"encoder={entry['encoder_raw']}")
                 suffix = f" {' '.join(details)}" if details else ""
-                print(f"  - mt id={node_id}: replies={reply_text}{suffix}")
+                print(
+                    f"  - mt {format_mt_identity(node_id, args.show_can_id_hex)}: "
+                    f"replies={reply_text}{suffix}"
+                )
+
+            if configured_mt:
+                configured_motor_ids = {motor_id for _, motor_id in configured_mt}
+                online_motor_ids = {MT_SEND_FRAME_BASE + node_id for node_id in mt_hits}
+                missing = sorted(configured_motor_ids - online_motor_ids)
+                unexpected = sorted(online_motor_ids - configured_motor_ids)
+                if missing:
+                    print(
+                        "[scan] configured but offline MT IDs: "
+                        + ", ".join(f"0x{motor_id:03X}" for motor_id in missing)
+                    )
+                if unexpected:
+                    print(
+                        "[scan] online but not configured MT IDs: "
+                        + ", ".join(f"0x{motor_id:03X}" for motor_id in unexpected)
+                    )
         else:
             print("[scan] MT online IDs: none")
+            if configured_mt:
+                print(
+                    "[scan] configured but offline MT IDs: "
+                    + ", ".join(f"0x{motor_id:03X}" for _, motor_id in configured_mt)
+                )
 
-    if args.protocol in ("dm", "both"):
+    if protocol in ("dm", "both"):
         if dm_hits:
             print("[scan] DM online IDs:", ", ".join(str(node_id) for node_id in dm_hits))
             for node_id in dm_hits:

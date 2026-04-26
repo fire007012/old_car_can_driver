@@ -1,0 +1,48 @@
+# Low-level integration overlay for ECB network-only tests.
+# Scope: four flipper ECB joints on the fixed ECB network endpoint.
+
+can_driver_node:
+  joints:
+    - name: ecb_joint_02
+      motor_id: 0x02
+      protocol: ECB
+      can_device: ecb://192.168.1.30
+      ecb_ip: 192.168.1.30
+      ecb_discovery: fixed
+      ecb_refresh_ms: 20
+      control_mode: position
+      position_scale: 6.283185307179586e-4
+      velocity_scale: 1.0471975511965978e-2
+
+    - name: ecb_joint_03
+      motor_id: 0x03
+      protocol: ECB
+      can_device: ecb://192.168.1.30
+      ecb_ip: 192.168.1.30
+      ecb_discovery: fixed
+      ecb_refresh_ms: 20
+      control_mode: position
+      position_scale: 6.283185307179586e-4
+      velocity_scale: 1.0471975511965978e-2
+
+    - name: ecb_joint_04
+      motor_id: 0x04
+      protocol: ECB
+      can_device: ecb://192.168.1.30
+      ecb_ip: 192.168.1.30
+      ecb_discovery: fixed
+      ecb_refresh_ms: 20
+      control_mode: position
+      position_scale: 6.283185307179586e-4
+      velocity_scale: 1.0471975511965978e-2
+
+    - name: ecb_joint_05
+      motor_id: 0x05
+      protocol: ECB
+      can_device: ecb://192.168.1.30
+      ecb_ip: 192.168.1.30
+      ecb_discovery: fixed
+      ecb_refresh_ms: 20
+      control_mode: position
+      position_scale: 6.283185307179586e-4
+      velocity_scale: 1.0471975511965978e-2

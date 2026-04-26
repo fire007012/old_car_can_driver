@@ -519,6 +519,11 @@ public:
         std::lock_guard<std::mutex> lock(lifecycleMutex_);
         deviceRefreshRateHzCalls_.emplace_back(device, hz);
     }
+    void setMtCommunicationTimeoutOnInitMs(uint32_t timeoutMs) override
+    {
+        std::lock_guard<std::mutex> lock(lifecycleMutex_);
+        mtCommunicationTimeoutOnInitMsCalls_.push_back(timeoutMs);
+    }
     void setPpFastWriteEnabled(bool) override {}
     void setPpDefaultPositionVelocityRaw(int32_t) override {}
     void setPpPositionDefaultVelocityRaw(int32_t) override {}
@@ -674,6 +679,12 @@ public:
         return deviceRefreshRateHzCalls_;
     }
 
+    std::vector<uint32_t> mtCommunicationTimeoutOnInitMsCalls() const
+    {
+        std::lock_guard<std::mutex> lock(lifecycleMutex_);
+        return mtCommunicationTimeoutOnInitMsCalls_;
+    }
+
 private:
     std::shared_ptr<FakeProtocol> protocol_;
     std::shared_ptr<std::mutex> mutex_;
@@ -692,6 +703,7 @@ private:
     bool velocityOnlyFeedbackOnInit_{false};
     std::vector<double> refreshRateHzCalls_;
     std::vector<std::pair<std::string, double>> deviceRefreshRateHzCalls_;
+    std::vector<uint32_t> mtCommunicationTimeoutOnInitMsCalls_;
     std::set<std::string> ensuredDevices_;
     std::set<std::pair<std::string, CanType>> ensuredProtocols_;
     std::set<std::string> initializedDevices_;

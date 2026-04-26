@@ -229,6 +229,7 @@ catkin_install_python(PROGRAMS
   scripts/realtime_motor_ui.py
   scripts/mt_motor_interface.py
   scripts/socketcan_scan_ids.py
+  scripts/lifecycle_compat_autostart.py
   DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
 )
 

@@ -172,7 +172,7 @@ TEST_F(MtCanTest, SetPositionEncodesExpectedFrame)
 
     const auto &frame = transport->sentFrames[0];
     // MT 位置命令 0xA4：携带速度上限（data[2..3]）和目标位置（data[4..7]）。
-    EXPECT_EQ(frame.id, 0x14Bu);
+    EXPECT_EQ(frame.id, 0x142u);
     EXPECT_EQ(frame.dlc, 8u);
     EXPECT_EQ(frame.data[0], 0xA4);
     // 当前实现会把 setVelocity 的 0.01 dps/LSB 换算到 0xA4 所需的 1 dps/LSB。
@@ -197,6 +197,18 @@ TEST_F(MtCanTest, SetPositionWithoutVelocityUsesDefaultSpeed)
     EXPECT_EQ(frame.data[0], 0xA4);
     EXPECT_EQ(frame.data[2], 100u);
     EXPECT_EQ(frame.data[3], 0u);
+}
+
+TEST_F(MtCanTest, FullMtMotorIdUsesMtNodeOffset)
+{
+    constexpr MotorID kMotorId = static_cast<MotorID>(0x143);
+
+    ASSERT_TRUE(mt.setVelocity(kMotorId, 321));
+    ASSERT_EQ(transport->sentFrames.size(), 1u);
+
+    const auto &frame = transport->sentFrames[0];
+    EXPECT_EQ(frame.id, 0x143u);
+    EXPECT_EQ(frame.data[0], 0xA2);
 }
 
 TEST_F(MtCanTest, WritesRouteThroughUnifiedTxDispatcher)
@@ -432,6 +444,23 @@ TEST_F(MtCanTest, SlowRefreshRateDoesNotPrematurelyTimeoutReadRequests)
     mt.issueRefreshQuery(static_cast<MotorID>(0x01), MtCan::RefreshQuery::State);
     EXPECT_EQ(transport->sentFrames.size(), 1u);
     EXPECT_EQ(MtCanTestAccessor::consecutiveTimeouts(mt, 0x01, 0x9C), 1u);
+}
+
+TEST_F(MtCanTest, InitializeMotorRefreshBroadcastsConfiguredCommunicationTimeout)
+{
+    mt.setCommunicationTimeoutOnInit(0);
+
+    mt.initializeMotorRefresh({static_cast<MotorID>(0x01), static_cast<MotorID>(0x02)});
+
+    ASSERT_EQ(transport->sentFrames.size(), 2u);
+    EXPECT_EQ(transport->sentFrames[0].id, 0x141u);
+    EXPECT_EQ(transport->sentFrames[0].data[0], 0xB3u);
+    EXPECT_EQ(transport->sentFrames[0].data[4], 0u);
+    EXPECT_EQ(transport->sentFrames[0].data[5], 0u);
+    EXPECT_EQ(transport->sentFrames[0].data[6], 0u);
+    EXPECT_EQ(transport->sentFrames[0].data[7], 0u);
+    EXPECT_EQ(transport->sentFrames[1].id, 0x142u);
+    EXPECT_EQ(transport->sentFrames[1].data[0], 0xB3u);
 }
 
 TEST_F(MtCanTest, EnableDisableAndFaultStateAreObservable)

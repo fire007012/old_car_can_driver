@@ -238,7 +238,7 @@ std::vector<MotorActionExecutor::Target> makeTargets()
 {
     return {
         MotorActionExecutor::Target{"joint_a", "fake0", CanType::MT, static_cast<MotorID>(0x141)},
-        MotorActionExecutor::Target{"joint_b", "fake0", CanType::MT, static_cast<MotorID>(0x14B)},
+        MotorActionExecutor::Target{"joint_b", "fake0", CanType::MT, static_cast<MotorID>(0x142)},
         MotorActionExecutor::Target{"joint_c", "fake1", CanType::PP, static_cast<MotorID>(0x201)},
     };
 }
@@ -469,7 +469,7 @@ TEST(LifecycleDriverOpsTest, EnableAllRollsBackSucceededMotorsOnPartialFailure)
     ops.setTargets(makeTargets());
 
     deviceManager->protocol()->setEnableResult(0x141, true);
-    deviceManager->protocol()->setEnableResult(0x14B, false);
+    deviceManager->protocol()->setEnableResult(0x142, false);
 
     const auto result = ops.enableAll();
     EXPECT_FALSE(result.ok);
@@ -486,7 +486,7 @@ TEST(LifecycleDriverOpsTest, EnableAllReportsRollbackFailureWhenDisableFails)
     ops.setTargets(makeTargets());
 
     deviceManager->protocol()->setEnableResult(0x141, true);
-    deviceManager->protocol()->setEnableResult(0x14B, false);
+    deviceManager->protocol()->setEnableResult(0x142, false);
     deviceManager->protocol()->setDisableResult(0x141, false);
 
     const auto result = ops.enableAll();
@@ -512,7 +512,7 @@ TEST(LifecycleDriverOpsTest, InitializeDeviceFiltersTargetsByRequestedBus)
     EXPECT_TRUE(deviceManager->lastInitLoopback());
     EXPECT_EQ(deviceManager->protocol()->enableCalls(0x201), 1);
     EXPECT_EQ(deviceManager->protocol()->enableCalls(0x141), 0);
-    EXPECT_EQ(deviceManager->protocol()->enableCalls(0x14B), 0);
+    EXPECT_EQ(deviceManager->protocol()->enableCalls(0x142), 0);
 }
 
 TEST(LifecycleDriverOpsTest, InitializeDeviceRollsBackPartialEnableFailure)
@@ -523,13 +523,13 @@ TEST(LifecycleDriverOpsTest, InitializeDeviceRollsBackPartialEnableFailure)
     ops.setTargets(makeTargets());
 
     deviceManager->protocol()->setEnableResult(0x141, true);
-    deviceManager->protocol()->setEnableResult(0x14B, false);
+    deviceManager->protocol()->setEnableResult(0x142, false);
 
     const auto result = ops.initializeDevice("fake0", false);
     EXPECT_FALSE(result.ok);
     EXPECT_EQ(result.message, "Enable command rejected.");
     EXPECT_EQ(deviceManager->protocol()->enableCalls(0x141), 1);
-    EXPECT_EQ(deviceManager->protocol()->enableCalls(0x14B), 1);
+    EXPECT_EQ(deviceManager->protocol()->enableCalls(0x142), 1);
     EXPECT_EQ(deviceManager->protocol()->disableCalls(0x141), 1);
     EXPECT_FALSE(deviceManager->protocol()->isEnabled(static_cast<MotorID>(0x141)));
 }
@@ -554,19 +554,19 @@ TEST(LifecycleDriverOpsTest, RecoverAllResetsFaultsBeforeReturningSuccess)
     can_driver::LifecycleDriverOps ops(deviceManager, &executor);
     ops.setTargets({
         MotorActionExecutor::Target{"joint_a", "fake0", CanType::MT, static_cast<MotorID>(0x141)},
-        MotorActionExecutor::Target{"joint_b", "fake0", CanType::MT, static_cast<MotorID>(0x14B)},
+        MotorActionExecutor::Target{"joint_b", "fake0", CanType::MT, static_cast<MotorID>(0x142)},
     });
 
     deviceManager->protocol()->setFault(0x141, true);
-    deviceManager->protocol()->setFault(0x14B, true);
+    deviceManager->protocol()->setFault(0x142, true);
     deviceManager->protocol()->setResetFaultBehavior(0x141, true, true);
-    deviceManager->protocol()->setResetFaultBehavior(0x14B, true, true);
+    deviceManager->protocol()->setResetFaultBehavior(0x142, true, true);
 
     const auto result = ops.recoverAll();
     EXPECT_TRUE(result.ok);
     EXPECT_TRUE(result.message.empty());
     EXPECT_EQ(deviceManager->protocol()->resetFaultCalls(0x141), 1);
-    EXPECT_EQ(deviceManager->protocol()->resetFaultCalls(0x14B), 1);
+    EXPECT_EQ(deviceManager->protocol()->resetFaultCalls(0x142), 1);
     EXPECT_FALSE(ops.anyFaultActive());
 }
 

@@ -1,0 +1,40 @@
+# Low-level integration overlay for can0-only tests.
+# Scope: front wheels and the first two arm MT joints on can0.
+
+can_driver_node:
+  joints:
+    - name: shoulder_yaw_joint
+      motor_id: 0x143
+      protocol: MT
+      can_device: can0
+      control_mode: position
+      position_scale: 1.7453292519943296e-04
+      velocity_scale: 1.7453292519943296e-04
+      direction_sign: 1.0
+
+    - name: shoulder_pitch_joint
+      motor_id: 0x144
+      protocol: MT
+      can_device: can0
+      control_mode: position
+      position_scale: 1.7453292519943296e-04
+      velocity_scale: 1.7453292519943296e-04
+      direction_sign: 1.0
+
+    - name: left_front_wheel_joint
+      motor_id: 0x141
+      protocol: MT
+      can_device: can0
+      control_mode: velocity
+      position_scale: 1.7453292519943296e-04
+      velocity_scale: 1.7453292519943296e-04
+      direction_sign: 1.0
+
+    - name: right_front_wheel_joint
+      motor_id: 0x142
+      protocol: MT
+      can_device: can0
+      control_mode: velocity
+      position_scale: 1.7453292519943296e-04
+      velocity_scale: 1.7453292519943296e-04
+      direction_sign: -1.0

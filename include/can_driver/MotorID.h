@@ -11,7 +11,7 @@
  */
 enum class MotorID : std::uint16_t {
     LeftWheel = 0x141,
-    RightWheel = 0x14B,
+    RightWheel = 0x142,
     
     RotaryTable = 0x6,
     LargerArm = 0x5,
@@ -55,7 +55,7 @@ enum class MotorID : std::uint16_t {
 // enum class MTMotorID : std::uint16_t {
 
 //     MainWheel1 = 0x141,
-//     MainWheel2 = 0x14B,
+//     MainWheel2 = 0x142,
 
 //     PTZ1 = 0x21,
 //     PTZ2 = 0x22,
@@ -87,12 +87,35 @@ constexpr std::uint16_t toCanId(MotorID id)
 
 namespace can_driver {
 
+constexpr std::uint16_t kMtSendBaseId = 0x140u;
+
 /**
  * @brief 返回系统层 motor_id（对外服务、状态发布、配置解析使用的稳定 ID）。
  */
 constexpr std::uint16_t toSystemMotorId(MotorID id)
 {
     return static_cast<std::uint16_t>(id);
+}
+
+/**
+ * @brief 将系统层 motor_id 转换为 MT 协议在线路上使用的 node id。
+ *
+ * MT 在系统配置中通常写完整发送 CAN ID，例如 0x141~0x15F；
+ * 实际协议节点号需要减去发送基址 0x140。
+ */
+constexpr std::uint8_t toMtProtocolNodeId(MotorID id)
+{
+    const auto systemId = toSystemMotorId(id);
+    return static_cast<std::uint8_t>(systemId >= kMtSendBaseId ? (systemId - kMtSendBaseId)
+                                                               : (systemId & 0xFFu));
+}
+
+/**
+ * @brief 根据 MT 协议 node id 还原系统层 motor_id。
+ */
+constexpr MotorID motorIdFromMtProtocolNodeId(std::uint8_t nodeId)
+{
+    return static_cast<MotorID>(static_cast<std::uint16_t>(kMtSendBaseId + nodeId));
 }
 
 /**

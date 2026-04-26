@@ -1,0 +1,54 @@
+# Low-level integration overlay for can1-only tests.
+# Scope: rear four PP arm joints and the active gripper joint on can1.
+
+can_driver_node:
+  joints:
+    - name: elbow_pitch_joint
+      motor_id: 0x1F
+      protocol: PP
+      can_device: can1
+      control_mode: csp
+      position_scale: 65536
+      velocity_scale: 65536
+      direction_sign: -1.0
+      ip_max_velocity: 1.0
+      ip_max_acceleration: 0.8
+      ip_max_jerk: 4.0
+      ip_goal_tolerance: 0.001
+
+    - name: wrist_pitch_joint
+      motor_id: 0x20
+      protocol: PP
+      can_device: can1
+      control_mode: csp
+      position_scale: 65536
+      velocity_scale: 65536
+      ip_max_velocity: 1.0
+      ip_max_acceleration: 2.0
+      ip_max_jerk: 10.0
+      ip_goal_tolerance: 0.001
+
+    - name: wrist_roll_joint
+      motor_id: 0x21
+      protocol: PP
+      can_device: can1
+      control_mode: csp
+      position_scale: 65536
+      velocity_scale: 65536
+
+    - name: wrist_yaw_joint
+      motor_id: 0x22
+      protocol: PP
+      can_device: can1
+      control_mode: csp
+      position_scale: 65536
+      velocity_scale: 65536
+      direction_sign: -1.0
+
+    - name: left_gripper_finger_joint
+      motor_id: 0x1E
+      protocol: PP
+      can_device: can1
+      control_mode: csp
+      position_scale: 65536
+      velocity_scale: 65536

@@ -350,7 +350,7 @@ select_motor_id() {
       add_candidate "${id}"
     done
     add_candidate "0x141"
-    add_candidate "0x14B"
+    add_candidate "0x142"
   fi
 
   if [[ "${#candidates[@]}" -eq 0 ]]; then

@@ -83,7 +83,7 @@ roslaunch can_driver can_driver.launch
 
 当前默认 MT ID（按 [config/can_driver.yaml](config/can_driver.yaml)）：
 - `0x141`
-- `0x14B`
+- `0x142`
 
 ### 3.2 接口脚本
 
@@ -128,7 +128,7 @@ bash scripts/test_mt_motor_motion.sh car_a auto 5.0 2.0 2.5 2.0
 
 说明：
 - `motor_id=auto` 时，脚本会优先读取运行时 `/can_driver_node/joints` 中的 MT 电机 ID；
-  若运行时不可读，则回退 `profile.mt_motor_ids`，最后再回退默认 `0x141/0x14B`。
+  若运行时不可读，则回退 `profile.mt_motor_ids`，最后再回退默认 `0x141/0x142`。
 - 脚本会在测试前自动确保生命周期进入 `Running`：
   - 若 `Faulted`：执行 `recover`
   - 若 `Inactive/Configured`：执行 `init`

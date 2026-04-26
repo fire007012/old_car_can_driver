@@ -51,6 +51,8 @@ public:
     void setRefreshRateHz(double hz) override;
     /// 设置指定 device 的状态轮询频率（Hz）；<=0 回退到全局默认策略。
     void setDeviceRefreshRateHz(const std::string &device, double hz) override;
+    /// 设置 MT 协议在注册电机后下发的通讯中断保护时间（ms）。
+    void setMtCommunicationTimeoutOnInitMs(uint32_t timeoutMs) override;
     /// 设置 PP 协议是否使用快写命令（CMD=0x05）。
     void setPpFastWriteEnabled(bool enabled) override;
     /// 兼容旧接口：同时设置 PP 位置/CSP 命令默认预配置速度（0x09，协议原始单位）。
@@ -134,6 +136,7 @@ private:
     std::shared_ptr<can_driver::SharedDriverState> sharedState_{
         std::make_shared<can_driver::SharedDriverState>()};
     bool ppFastWriteEnabled_{false};
+    uint32_t mtCommunicationTimeoutOnInitMs_{0};
     int32_t ppPositionDefaultVelocityRaw_{EyouCan::kDefaultPositionVelocityRaw};
     int32_t ppCspDefaultVelocityRaw_{EyouCan::kDefaultPositionVelocityRaw};
     double refreshRateHz_{0.0};

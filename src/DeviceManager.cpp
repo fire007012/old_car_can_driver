@@ -2,6 +2,8 @@
 #include "can_driver/DeviceRuntime.h"
 #include "can_driver/RefreshScheduler.h"
 
+#include "can_driver/MotorID.h"
+
 #include <algorithm>
 #include <chrono>
 #include <cmath>
@@ -22,12 +24,17 @@ std::chrono::milliseconds clampRefreshSleep(std::chrono::milliseconds sleepFor)
     return sleepFor;
 }
 
-std::vector<std::uint8_t> normalizeMotorIds(const std::vector<MotorID> &motorIds)
+std::vector<std::uint8_t> normalizeMotorIds(const std::vector<MotorID> &motorIds,
+                                            CanType protocol)
 {
     std::vector<std::uint8_t> normalized;
     normalized.reserve(motorIds.size());
     for (const auto motorId : motorIds) {
-        normalized.push_back(can_driver::toProtocolNodeId(motorId));
+        if (protocol == CanType::MT) {
+            normalized.push_back(can_driver::toMtProtocolNodeId(motorId));
+        } else {
+            normalized.push_back(can_driver::toProtocolNodeId(motorId));
+        }
     }
     return normalized;
 }
@@ -610,6 +617,7 @@ bool DeviceManager::ensureProtocol(const std::string &device, CanType type)
         if (mtProtocols_.find(device) == mtProtocols_.end()) {
             auto mt = std::make_shared<MtCan>(transport, txDispatcher, sharedState_, device);
             mt->setRefreshRateHz(effectiveRefreshRateHzLocked(device));
+            mt->setCommunicationTimeoutOnInit(mtCommunicationTimeoutOnInitMs_);
             mtProtocols_[device] = std::move(mt);
         }
     } else if (type == CanType::PP) {
@@ -737,6 +745,7 @@ bool DeviceManager::initDevice(const std::string &device,
         auto mt = std::make_shared<MtCan>(
             transport, txDispatchers_[device], sharedState_, device);
         mt->setRefreshRateHz(effectiveRefreshRateHzLocked(device));
+        mt->setCommunicationTimeoutOnInit(mtCommunicationTimeoutOnInitMs_);
         mtProtocols_[device] = std::move(mt);
     }
     if (!ppIds.empty() && eyouProtocols_.find(device) == eyouProtocols_.end()) {
@@ -762,7 +771,7 @@ bool DeviceManager::initDevice(const std::string &device,
         mtProtocols_[device]->initializeMotorRefresh(mtIds);
         runtime->mtActive.store(true, std::memory_order_release);
         std::lock_guard<std::mutex> lock(runtime->scheduleMutex);
-        runtime->mtMotorIds = normalizeMotorIds(mtIds);
+        runtime->mtMotorIds = normalizeMotorIds(mtIds, CanType::MT);
         runtime->mtScheduleCycleCount = 0;
         runtime->nextMtTick = std::chrono::steady_clock::time_point {};
     } else {
@@ -776,7 +785,7 @@ bool DeviceManager::initDevice(const std::string &device,
         eyouProtocols_[device]->initializeMotorRefresh(ppIds);
         runtime->ppActive.store(true, std::memory_order_release);
         std::lock_guard<std::mutex> lock(runtime->scheduleMutex);
-        runtime->ppMotorIds = normalizeMotorIds(ppIds);
+        runtime->ppMotorIds = normalizeMotorIds(ppIds, CanType::PP);
         runtime->ppScheduleStates.clear();
         runtime->ppScheduleCycleCount = 0;
         runtime->nextPpTick = std::chrono::steady_clock::time_point {};
@@ -792,7 +801,7 @@ bool DeviceManager::initDevice(const std::string &device,
         damiaoProtocols_[device]->initializeMotorRefresh(dmIds);
         runtime->dmActive.store(true, std::memory_order_release);
         std::lock_guard<std::mutex> lock(runtime->scheduleMutex);
-        runtime->dmMotorIds = normalizeMotorIds(dmIds);
+        runtime->dmMotorIds = normalizeMotorIds(dmIds, CanType::DM);
         runtime->dmScheduleStates.clear();
         runtime->nextDmTick = std::chrono::steady_clock::time_point {};
     } else {
@@ -808,6 +817,17 @@ bool DeviceManager::initDevice(const std::string &device,
     return true;
 }
 
+void DeviceManager::setMtCommunicationTimeoutOnInitMs(uint32_t timeoutMs)
+{
+    std::unique_lock<std::shared_mutex> lock(mutex_);
+    mtCommunicationTimeoutOnInitMs_ = timeoutMs;
+    for (auto &entry : mtProtocols_) {
+        if (entry.second) {
+            entry.second->setCommunicationTimeoutOnInit(timeoutMs);
+        }
+    }
+}
+
 void DeviceManager::startRefresh(const std::string &device,
                                  CanType type,
                                  const std::vector<MotorID> &ids)
@@ -820,7 +840,7 @@ void DeviceManager::startRefresh(const std::string &device,
             syncDeviceRefreshRuntimeLocked(device);
             auto runtime = deviceRefreshRuntimes_[device];
             runtime->mtActive.store(!ids.empty(), std::memory_order_release);
-            const auto normalizedIds = normalizeMotorIds(ids);
+            const auto normalizedIds = normalizeMotorIds(ids, CanType::MT);
             {
                 std::lock_guard<std::mutex> scheduleLock(runtime->scheduleMutex);
                 if (runtime->mtMotorIds != normalizedIds) {
@@ -844,7 +864,7 @@ void DeviceManager::startRefresh(const std::string &device,
             syncDeviceRefreshRuntimeLocked(device);
             auto runtime = deviceRefreshRuntimes_[device];
             runtime->ppActive.store(!ids.empty(), std::memory_order_release);
-            const auto normalizedIds = normalizeMotorIds(ids);
+            const auto normalizedIds = normalizeMotorIds(ids, CanType::PP);
             {
                 std::lock_guard<std::mutex> scheduleLock(runtime->scheduleMutex);
                 if (runtime->ppMotorIds != normalizedIds) {
@@ -869,7 +889,7 @@ void DeviceManager::startRefresh(const std::string &device,
             syncDeviceRefreshRuntimeLocked(device);
             auto runtime = deviceRefreshRuntimes_[device];
             runtime->dmActive.store(!ids.empty(), std::memory_order_release);
-            const auto normalizedIds = normalizeMotorIds(ids);
+            const auto normalizedIds = normalizeMotorIds(ids, CanType::DM);
             {
                 std::lock_guard<std::mutex> scheduleLock(runtime->scheduleMutex);
                 if (runtime->dmMotorIds != normalizedIds) {

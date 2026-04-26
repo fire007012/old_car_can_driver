@@ -1,0 +1,22 @@
+<launch>
+  <!-- ECB network classified low-level integration entry.
+       Loads only ECB network joints and drives /can_driver_node lifecycle to Running. -->
+  <arg name="use_controllers" default="false"/>
+  <arg name="auto_recover" default="false"/>
+  <arg name="lifecycle_max_attempts" default="3"/>
+  <arg name="startup_position_sync_timeout_sec" default="3.0"/>
+  <arg name="robot_urdf" default="$(find car_urdf)/urdf/car_urdf.urdf"/>
+  <arg name="joints_overlay" default="$(find can_driver)/config/can_driver_joints_ecb_network_only.yaml"/>
+
+  <include file="$(find can_driver)/launch/can_driver.launch">
+    <arg name="use_controllers" value="$(arg use_controllers)"/>
+    <arg name="can_driver_joints_overlay" value="$(arg joints_overlay)"/>
+    <arg name="robot_urdf" value="$(arg robot_urdf)"/>
+    <arg name="startup_position_sync_timeout_sec" value="$(arg startup_position_sync_timeout_sec)"/>
+    <arg name="autostart_lifecycle" value="true"/>
+    <arg name="lifecycle_init_device" value="ecb://192.168.1.30"/>
+    <arg name="lifecycle_init_loopback" value="false"/>
+    <arg name="lifecycle_auto_recover" value="$(arg auto_recover)"/>
+    <arg name="lifecycle_max_attempts" value="$(arg lifecycle_max_attempts)"/>
+  </include>
+</launch>
