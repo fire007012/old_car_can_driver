@@ -74,7 +74,7 @@ bool LifecycleServiceGateway::onInit(can_driver::Init::Request &req,
     const auto result = coordinator_->RequestInit(req.device, req.loopback);
     res.success = result.ok;
     res.message = result.ok
-                      ? selectSuccessMessage(result, "initialized (armed)", "already initialized")
+                      ? selectSuccessMessage(result, "initialized (standby)", "already initialized")
                       : selectFailureMessage(result, "init failed");
     return true;
 }

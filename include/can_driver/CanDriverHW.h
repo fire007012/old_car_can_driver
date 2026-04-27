@@ -187,6 +187,7 @@ private:
     double ppCspDefaultVelocityRadS_{0.0};
     double startupPositionSyncTimeoutSec_{1.0};
     double startupProbeQueryHz_{5.0};
+    double refreshInterFrameGapSec_{0.001};
     uint32_t mtCommunicationTimeoutOnInitMs_{0};
     double safetyFeedbackFreshnessTimeoutSec_{0.5};
     bool safetyStopOnFault_{true};

@@ -16,6 +16,7 @@
 #include "can_driver/UdpCanTransport.h"
 
 #include <atomic>
+#include <chrono>
 #include <cstdint>
 #include <map>
 #include <memory>
@@ -51,6 +52,8 @@ public:
     void setRefreshRateHz(double hz) override;
     /// 设置指定 device 的状态轮询频率（Hz）；<=0 回退到全局默认策略。
     void setDeviceRefreshRateHz(const std::string &device, double hz) override;
+    /// 设置查询帧之间的最小发送间隔（微秒）。
+    void setRefreshInterFrameGapUs(uint32_t gapUs) override;
     /// 设置 MT 协议在注册电机后下发的通讯中断保护时间（ms）。
     void setMtCommunicationTimeoutOnInitMs(uint32_t timeoutMs) override;
     /// 设置 PP 协议是否使用快写命令（CMD=0x05）。
@@ -86,6 +89,14 @@ private:
     bool initializeTransportLocked(const std::string &device, bool loopback);
 
     struct DeviceRefreshRuntime {
+        struct PendingRefresh {
+            CanType protocol{CanType::PP};
+            std::uint8_t motorId{0};
+            std::int64_t observedLastRxSteadyNs{0};
+            std::chrono::steady_clock::time_point deadline {};
+            bool active{false};
+        };
+
         std::string deviceName;
         std::weak_ptr<can_driver::SharedDriverState> sharedState;
         std::weak_ptr<MtCan> mtProtocol;
@@ -108,6 +119,13 @@ private:
         std::chrono::steady_clock::time_point nextMtTick {};
         std::chrono::steady_clock::time_point nextPpTick {};
         std::chrono::steady_clock::time_point nextDmTick {};
+        std::chrono::steady_clock::time_point nextEligibleIssueTime {};
+        PendingRefresh pendingRefresh;
+        std::size_t protocolRoundRobinCursor{0};
+        std::size_t mtMotorCursor{0};
+        std::size_t ppMotorCursor{0};
+        std::size_t dmMotorCursor{0};
+        std::chrono::microseconds interFrameGap {std::chrono::microseconds(1000)};
         mutable std::mutex scheduleMutex;
     };
 
@@ -136,6 +154,7 @@ private:
     std::shared_ptr<can_driver::SharedDriverState> sharedState_{
         std::make_shared<can_driver::SharedDriverState>()};
     bool ppFastWriteEnabled_{false};
+    std::chrono::microseconds refreshInterFrameGap_{std::chrono::microseconds(1000)};
     uint32_t mtCommunicationTimeoutOnInitMs_{0};
     int32_t ppPositionDefaultVelocityRaw_{EyouCan::kDefaultPositionVelocityRaw};
     int32_t ppCspDefaultVelocityRaw_{EyouCan::kDefaultPositionVelocityRaw};

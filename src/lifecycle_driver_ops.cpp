@@ -274,11 +274,7 @@ LifecycleDriverOps::Result LifecycleDriverOps::initializeDevice(const std::strin
     if (!prepare.ok) {
         return prepare;
     }
-    const auto enable = enableDevice(device);
-    if (!enable.ok) {
-        return enable;
-    }
-    return {true, "initialized (armed)"};
+    return {true, "initialized (standby)"};
 }
 
 LifecycleDriverOps::Result LifecycleDriverOps::shutdownDevice(const std::string &device) const

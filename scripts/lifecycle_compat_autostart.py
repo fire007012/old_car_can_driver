@@ -120,7 +120,7 @@ class LifecycleCompatAutostart:
                 else:
                     attempts += 1
                     ok = self._call_init()
-                    state = "Armed" if ok else state
+                    state = "Standby" if ok else state
             elif state == "Faulted":
                 attempts += 1
                 ok = self._call_recover() if self.auto_recover else False

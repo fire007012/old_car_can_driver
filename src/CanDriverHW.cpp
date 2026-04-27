@@ -35,6 +35,8 @@ long long steadyAgeMs(std::int64_t stampNs)
 
 constexpr double kDefaultPpVelocityRadS = (10.0 * 2.0 * M_PI / 60.0);
 
+constexpr std::chrono::milliseconds kStartupProbeSingleRequestTimeout(250);
+
 const char *protocolDisplayName(CanType protocol)
 {
     switch (protocol) {
@@ -62,6 +64,67 @@ bool sharedFeedbackFresh(const can_driver::SharedDriverState::AxisFeedbackState 
         return true;
     }
     return (nowNs - feedback.lastRxSteadyNs) <= config.feedbackFreshnessTimeoutNs;
+}
+
+bool startupFeedbackSatisfiesRequirement(const can_driver::CanDriverJointConfig &joint,
+                                         const can_driver::SharedDriverState::AxisFeedbackState &feedback)
+{
+    const auto axisMode = can_driver::axisControlModeFromString(joint.controlMode);
+    const bool needsPositionFeedback =
+        can_driver::controlModeUsesPositionSemantics(axisMode);
+    if (!feedback.feedbackSeen || feedback.lastRxSteadyNs <= 0) {
+        return false;
+    }
+    if (needsPositionFeedback) {
+        return feedback.positionValid;
+    }
+    return feedback.velocityValid || feedback.enabledValid || feedback.faultValid ||
+           feedback.currentValid || feedback.positionValid;
+}
+
+bool issueStartupProbeForJoint(const can_driver::CanDriverJointConfig &joint,
+                               const std::shared_ptr<CanProtocol> &protocol)
+{
+    if (!protocol) {
+        return false;
+    }
+
+    const auto axisMode = can_driver::axisControlModeFromString(joint.controlMode);
+    const bool needsPositionFeedback =
+        can_driver::controlModeUsesPositionSemantics(axisMode);
+
+    switch (joint.protocol) {
+    case CanType::PP: {
+        auto pp = std::dynamic_pointer_cast<EyouCan>(protocol);
+        if (!pp) {
+            return false;
+        }
+        return needsPositionFeedback
+                   ? pp->issueRefreshQuery(joint.motorId, can_driver::PpRefreshQuery::Position)
+                   : pp->issueRefreshQuery(joint.motorId, can_driver::PpRefreshQuery::Velocity);
+    }
+    case CanType::MT: {
+        auto mt = std::dynamic_pointer_cast<MtCan>(protocol);
+        if (!mt) {
+            return false;
+        }
+        mt->issueRefreshQuery(joint.motorId,
+                              needsPositionFeedback
+                                  ? can_driver::MtRefreshQuery::MultiTurnAngle
+                                  : can_driver::MtRefreshQuery::State);
+        return true;
+    }
+    case CanType::DM: {
+        auto dm = std::dynamic_pointer_cast<DamiaoCan>(protocol);
+        if (!dm) {
+            return false;
+        }
+        return dm->issueRefreshQuery(joint.motorId, can_driver::DmRefreshQuery::Keepalive);
+    }
+    case CanType::ECB:
+        break;
+    }
+    return false;
 }
 
 } // namespace
@@ -203,12 +266,12 @@ bool CanDriverHW::loadRuntimeParams(const ros::NodeHandle &pnh)
         debugBypassRosControl_ = false;
     }
     if (!pnh.getParam("startup_position_sync_timeout_sec", startupPositionSyncTimeoutSec_)) {
-        startupPositionSyncTimeoutSec_ = 1.0;
+        startupPositionSyncTimeoutSec_ = 3.0;
     }
     if (!std::isfinite(startupPositionSyncTimeoutSec_) || startupPositionSyncTimeoutSec_ < 0.0) {
-        ROS_WARN("[CanDriverHW] Invalid startup_position_sync_timeout_sec=%.9g, fallback to 1.0s.",
+        ROS_WARN("[CanDriverHW] Invalid startup_position_sync_timeout_sec=%.9g, fallback to 3.0s.",
                  startupPositionSyncTimeoutSec_);
-        startupPositionSyncTimeoutSec_ = 1.0;
+        startupPositionSyncTimeoutSec_ = 3.0;
     }
     if (!pnh.getParam("startup_probe_query_hz", startupProbeQueryHz_)) {
         startupProbeQueryHz_ = 20.0;
@@ -228,6 +291,14 @@ bool CanDriverHW::loadRuntimeParams(const ros::NodeHandle &pnh)
         mtCommunicationTimeoutOnInitMs = 0;
     }
     mtCommunicationTimeoutOnInitMs_ = static_cast<uint32_t>(mtCommunicationTimeoutOnInitMs);
+    if (!pnh.getParam("refresh_inter_frame_gap_sec", refreshInterFrameGapSec_)) {
+        refreshInterFrameGapSec_ = 0.001;
+    }
+    if (!std::isfinite(refreshInterFrameGapSec_) || refreshInterFrameGapSec_ < 0.0) {
+        ROS_WARN("[CanDriverHW] Invalid refresh_inter_frame_gap_sec=%.9g, fallback to 0.001s.",
+                 refreshInterFrameGapSec_);
+        refreshInterFrameGapSec_ = 0.001;
+    }
     if (!pnh.getParam("safety_feedback_freshness_timeout_sec",
                       safetyFeedbackFreshnessTimeoutSec_)) {
         safetyFeedbackFreshnessTimeoutSec_ = 0.5;
@@ -302,6 +373,8 @@ bool CanDriverHW::loadRuntimeParams(const ros::NodeHandle &pnh)
 
     deviceManager_->setPpFastWriteEnabled(ppFastWriteEnabled_);
     deviceManager_->setRefreshRateHz(motorQueryHz_);
+    deviceManager_->setRefreshInterFrameGapUs(static_cast<uint32_t>(
+        std::llround(refreshInterFrameGapSec_ * 1e6)));
     deviceManager_->setMtCommunicationTimeoutOnInitMs(mtCommunicationTimeoutOnInitMs_);
     lifecycleDriverOps_.setFeedbackFreshnessTimeoutNs(
         static_cast<std::int64_t>(safetyFeedbackFreshnessTimeoutSec_ * 1e9));
@@ -319,6 +392,8 @@ bool CanDriverHW::loadRuntimeParams(const ros::NodeHandle &pnh)
              startupPositionSyncTimeoutSec_);
     ROS_INFO("[CanDriverHW] startup_probe_query_hz=%.3f Hz.",
              startupProbeQueryHz_);
+    ROS_INFO("[CanDriverHW] refresh_inter_frame_gap_sec=%.6f s.",
+             refreshInterFrameGapSec_);
     ROS_INFO("[CanDriverHW] mt_communication_timeout_on_init_ms=%u.",
              mtCommunicationTimeoutOnInitMs_);
     ROS_INFO("[CanDriverHW] safety_feedback_freshness_timeout_sec=%.3f s.",
@@ -364,13 +439,65 @@ bool CanDriverHW::syncStartupPositionAndCommands(const std::string &deviceFilter
         return true;
     }
 
-    // 给协议刷新线程一个短暂窗口拉取首轮真实反馈。
     const double timeout = startupPositionSyncTimeoutSec_;
     const auto sleepDur = std::chrono::milliseconds(20);
     const int maxPasses = std::max(1, static_cast<int>(std::ceil(timeout / 0.02)));
     const auto sharedState = deviceManager_ ? deviceManager_->getSharedDriverState() : nullptr;
 
     if (sharedState) {
+        const auto startupDeadline = std::chrono::steady_clock::now() +
+                                     std::chrono::duration_cast<std::chrono::steady_clock::duration>(
+                                         std::chrono::duration<double>(timeout));
+
+        for (const std::size_t i : targetJointIndices) {
+            const auto &jc = joints_[i];
+            auto protocol = getProtocol(jc.canDevice, jc.protocol);
+            const auto axisKey =
+                can_driver::MakeAxisKey(jc.canDevice, jc.protocol, jc.motorId);
+            can_driver::SharedDriverState::AxisFeedbackState feedback;
+            const bool hasFeedbackBefore = sharedState->getAxisFeedback(axisKey, &feedback);
+            const std::int64_t lastRxBefore = hasFeedbackBefore ? feedback.lastRxSteadyNs : 0;
+
+            while (std::chrono::steady_clock::now() < startupDeadline) {
+                if (sharedState->getAxisFeedback(axisKey, &feedback) &&
+                    startupFeedbackSatisfiesRequirement(jc, feedback)) {
+                    break;
+                }
+
+                const bool issued = issueStartupProbeForJoint(jc, protocol);
+                if (!issued) {
+                    std::this_thread::sleep_for(sleepDur);
+                    continue;
+                }
+
+                const auto perRequestDeadline = std::min(
+                    startupDeadline,
+                    std::chrono::steady_clock::now() + kStartupProbeSingleRequestTimeout);
+                while (std::chrono::steady_clock::now() < perRequestDeadline) {
+                    if (!sharedState->getAxisFeedback(axisKey, &feedback)) {
+                        std::this_thread::sleep_for(sleepDur);
+                        continue;
+                    }
+                    if (startupFeedbackSatisfiesRequirement(jc, feedback)) {
+                        break;
+                    }
+                    if (feedback.lastRxSteadyNs > lastRxBefore) {
+                        break;
+                    }
+                    std::this_thread::sleep_for(sleepDur);
+                }
+
+                if (sharedState->getAxisFeedback(axisKey, &feedback) &&
+                    startupFeedbackSatisfiesRequirement(jc, feedback)) {
+                    break;
+                }
+
+                std::this_thread::sleep_for(
+                    std::chrono::duration_cast<std::chrono::milliseconds>(
+                        std::chrono::duration<double>(refreshInterFrameGapSec_)));
+            }
+        }
+
         bool allValid = false;
         std::vector<std::string> missingJoints;
         for (int pass = 0; pass < maxPasses; ++pass) {
@@ -379,25 +506,16 @@ bool CanDriverHW::syncStartupPositionAndCommands(const std::string &deviceFilter
 
             for (const std::size_t i : targetJointIndices) {
                 const auto &jc = joints_[i];
-                const auto axisMode =
-                    can_driver::axisControlModeFromString(jc.controlMode);
-                const bool needsPositionFeedback =
-                    can_driver::controlModeUsesPositionSemantics(axisMode);
                 can_driver::SharedDriverState::AxisFeedbackState feedback;
                 const auto axisKey =
                     can_driver::MakeAxisKey(jc.canDevice, jc.protocol, jc.motorId);
                 const bool hasFeedback = sharedState->getAxisFeedback(axisKey, &feedback);
-                const bool hasFreshFeedback =
-                    hasFeedback && feedback.feedbackSeen && feedback.lastRxSteadyNs > 0;
-                const bool hasRequiredStartupState =
-                    needsPositionFeedback
-                        ? (hasFeedback && feedback.positionValid)
-                        : (hasFeedback &&
-                           (feedback.velocityValid || feedback.enabledValid ||
-                            feedback.faultValid || feedback.currentValid ||
-                            feedback.positionValid));
-                if (!hasFreshFeedback || !hasRequiredStartupState) {
+                if (!hasFeedback || !startupFeedbackSatisfiesRequirement(jc, feedback)) {
                     allValid = false;
+                    const auto axisMode =
+                        can_driver::axisControlModeFromString(jc.controlMode);
+                    const bool needsPositionFeedback =
+                        can_driver::controlModeUsesPositionSemantics(axisMode);
                     missingJoints.push_back(
                         jc.name + (needsPositionFeedback ? "(position)" : "(velocity/state)"));
                     continue;

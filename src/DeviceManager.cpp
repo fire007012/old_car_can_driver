@@ -24,6 +24,24 @@ std::chrono::milliseconds clampRefreshSleep(std::chrono::milliseconds sleepFor)
     return sleepFor;
 }
 
+std::int64_t sharedAxisLastRxNs(const std::shared_ptr<can_driver::SharedDriverState> &sharedState,
+                                const std::string &deviceName,
+                                CanType protocol,
+                                std::uint8_t motorId)
+{
+    if (!sharedState) {
+        return 0;
+    }
+
+    can_driver::SharedDriverState::AxisFeedbackState feedback;
+    if (!sharedState->getAxisFeedback(
+            can_driver::MakeAxisKey(deviceName, protocol, static_cast<MotorID>(motorId)),
+            &feedback)) {
+        return 0;
+    }
+    return feedback.lastRxSteadyNs;
+}
+
 std::vector<std::uint8_t> normalizeMotorIds(const std::vector<MotorID> &motorIds,
                                             CanType protocol)
 {
@@ -106,6 +124,25 @@ can_driver::DmAxisRefreshSnapshot buildDmAxisRefreshSnapshot(
 }
 
 } // namespace
+
+void DeviceManager::setRefreshInterFrameGapUs(uint32_t gapUs)
+{
+    std::unique_lock<std::shared_mutex> lock(mutex_);
+    refreshInterFrameGap_ = std::chrono::microseconds(gapUs);
+    for (auto &entry : deviceRefreshRuntimes_) {
+        if (!entry.second) {
+            continue;
+        }
+        {
+            std::lock_guard<std::mutex> scheduleLock(entry.second->scheduleMutex);
+            entry.second->interFrameGap = refreshInterFrameGap_;
+            entry.second->nextEligibleIssueTime = std::chrono::steady_clock::time_point {};
+        }
+        if (entry.second->worker) {
+            entry.second->worker->notify();
+        }
+    }
+}
 
 bool DeviceManager::isUdpDevice(const std::string &device) const
 {
@@ -196,6 +233,7 @@ void DeviceManager::syncDeviceRefreshRuntimeLocked(const std::string &device)
     const auto dmIt = damiaoProtocols_.find(device);
     runtime->dmProtocol = (dmIt != damiaoProtocols_.end()) ? dmIt->second
                                                            : std::shared_ptr<DamiaoCan>();
+    runtime->interFrameGap = refreshInterFrameGap_;
 
     if (runtime->worker) {
         return;
@@ -211,10 +249,29 @@ void DeviceManager::syncDeviceRefreshRuntimeLocked(const std::string &device)
 
             bool queryPressureActive = false;
             const auto now = std::chrono::steady_clock::now();
+            const auto sharedState = runtime->sharedState.lock();
             {
                 std::lock_guard<std::mutex> lock(runtime->scheduleMutex);
+                if (runtime->pendingRefresh.active) {
+                    const auto lastRx = sharedAxisLastRxNs(sharedState,
+                                                           runtime->deviceName,
+                                                           runtime->pendingRefresh.protocol,
+                                                           runtime->pendingRefresh.motorId);
+                    if (lastRx > runtime->pendingRefresh.observedLastRxSteadyNs ||
+                        now >= runtime->pendingRefresh.deadline) {
+                        runtime->pendingRefresh.active = false;
+                    }
+                }
+                if (runtime->nextEligibleIssueTime != std::chrono::steady_clock::time_point {} &&
+                    now < runtime->nextEligibleIssueTime) {
+                    return;
+                }
+                if (runtime->pendingRefresh.active) {
+                    return;
+                }
+
                 const auto cycle = runtime->refreshCycleCount++;
-                if (const auto sharedState = runtime->sharedState.lock()) {
+                if (sharedState) {
                     can_driver::SharedDriverState::DeviceHealthState deviceHealth;
                     if (sharedState->getDeviceHealth(runtime->deviceName, &deviceHealth)) {
                         if (deviceHealth.txBackpressure > runtime->lastObservedTxBackpressure) {
@@ -227,131 +284,184 @@ void DeviceManager::syncDeviceRefreshRuntimeLocked(const std::string &device)
                 queryPressureActive = cycle < runtime->queryPressureUntilCycle;
             }
 
-            if (runtime->mtActive.load(std::memory_order_acquire)) {
-                const auto protocol = runtime->mtProtocol.lock();
-                bool due = false;
-                std::uint64_t cycle = 0;
-                std::vector<std::uint8_t> motorIds;
-                {
-                    std::lock_guard<std::mutex> lock(runtime->scheduleMutex);
-                    due = (runtime->nextMtTick == std::chrono::steady_clock::time_point {}) ||
-                          (now >= runtime->nextMtTick);
-                    if (due) {
-                        cycle = runtime->mtScheduleCycleCount++;
-                        motorIds = runtime->mtMotorIds;
-                    }
-                }
-                if (protocol && due) {
-                    for (std::size_t i = 0; i < motorIds.size(); ++i) {
-                        const auto plan =
-                            can_driver::BuildMtRefreshPlan(cycle, i, queryPressureActive);
-                        for (std::size_t j = 0; j < plan.count; ++j) {
-                            protocol->issueRefreshQuery(
-                                static_cast<MotorID>(motorIds[i]), plan.items[j]);
+            enum class AttemptedProtocol : std::size_t { Mt = 0, Pp = 1, Dm = 2 };
+            bool issuedAny = false;
+            for (std::size_t protocolTry = 0; protocolTry < 3 && !issuedAny; ++protocolTry) {
+                const auto selected = static_cast<AttemptedProtocol>(
+                    (runtime->protocolRoundRobinCursor + protocolTry) % 3);
+
+                if (selected == AttemptedProtocol::Mt &&
+                    runtime->mtActive.load(std::memory_order_acquire)) {
+                    const auto protocol = runtime->mtProtocol.lock();
+                    std::vector<std::uint8_t> motorIds;
+                    std::size_t cursor = 0;
+                    std::uint64_t cycle = 0;
+                    bool due = false;
+                    {
+                        std::lock_guard<std::mutex> lock(runtime->scheduleMutex);
+                        due = (runtime->nextMtTick == std::chrono::steady_clock::time_point {}) ||
+                              (now >= runtime->nextMtTick);
+                        if (due) {
+                            cycle = runtime->mtScheduleCycleCount++;
+                            motorIds = runtime->mtMotorIds;
+                            cursor = runtime->mtMotorCursor;
                         }
                     }
-                    const auto nextSleep = clampRefreshSleep(protocol->refreshSleepInterval());
-                    std::lock_guard<std::mutex> lock(runtime->scheduleMutex);
-                    runtime->nextMtTick = std::chrono::steady_clock::now() + nextSleep;
+                    if (protocol && due && !motorIds.empty()) {
+                        for (std::size_t offset = 0; offset < motorIds.size() && !issuedAny; ++offset) {
+                            const std::size_t index = (cursor + offset) % motorIds.size();
+                            const auto motorId = motorIds[index];
+                            const auto plan = can_driver::BuildMtRefreshPlan(cycle, index, queryPressureActive);
+                            for (std::size_t j = 0; j < plan.count && !issuedAny; ++j) {
+                                protocol->issueRefreshQuery(static_cast<MotorID>(motorId), plan.items[j]);
+                                issuedAny = true;
+                                std::lock_guard<std::mutex> lock(runtime->scheduleMutex);
+                                runtime->mtMotorCursor = (index + 1) % motorIds.size();
+                                runtime->nextMtTick = std::chrono::steady_clock::now() +
+                                                      clampRefreshSleep(protocol->refreshSleepInterval());
+                                runtime->nextEligibleIssueTime = std::chrono::steady_clock::now() +
+                                                                 runtime->interFrameGap;
+                                runtime->pendingRefresh.protocol = CanType::MT;
+                                runtime->pendingRefresh.motorId = motorId;
+                                runtime->pendingRefresh.observedLastRxSteadyNs =
+                                    sharedAxisLastRxNs(sharedState, runtime->deviceName, CanType::MT, motorId);
+                                runtime->pendingRefresh.deadline = std::chrono::steady_clock::now() +
+                                                                   clampRefreshSleep(protocol->refreshSleepInterval());
+                                runtime->pendingRefresh.active = true;
+                                runtime->protocolRoundRobinCursor = (static_cast<std::size_t>(AttemptedProtocol::Pp));
+                            }
+                        }
+                    }
                 }
-            } else {
+
+                if (selected == AttemptedProtocol::Pp &&
+                    runtime->ppActive.load(std::memory_order_acquire) && !issuedAny) {
+                    const auto protocol = runtime->ppProtocol.lock();
+                    std::vector<std::uint8_t> motorIds;
+                    std::size_t cursor = 0;
+                    bool due = false;
+                    {
+                        std::lock_guard<std::mutex> lock(runtime->scheduleMutex);
+                        due = (runtime->nextPpTick == std::chrono::steady_clock::time_point {}) ||
+                              (now >= runtime->nextPpTick);
+                        if (due) {
+                            ++runtime->ppScheduleCycleCount;
+                            motorIds = runtime->ppMotorIds;
+                            cursor = runtime->ppMotorCursor;
+                        }
+                    }
+                    if (protocol && due && !motorIds.empty()) {
+                        for (std::size_t offset = 0; offset < motorIds.size() && !issuedAny; ++offset) {
+                            const std::size_t index = (cursor + offset) % motorIds.size();
+                            const auto motorId = motorIds[index];
+                            const auto snapshot = buildPpAxisRefreshSnapshot(
+                                sharedState, runtime->deviceName, motorId);
+                            can_driver::PpRefreshPlan plan;
+                            {
+                                std::lock_guard<std::mutex> lock(runtime->scheduleMutex);
+                                auto &scheduleState = runtime->ppScheduleStates[motorId];
+                                plan = can_driver::BuildPpRefreshPlan(
+                                    now, queryPressureActive, snapshot, &scheduleState);
+                                for (std::size_t j = 0; j < plan.count; ++j) {
+                                    can_driver::NotePpRefreshQueryDue(now, &scheduleState, plan.items[j]);
+                                }
+                            }
+                            for (std::size_t j = 0; j < plan.count && !issuedAny; ++j) {
+                                const bool issued = protocol->issueRefreshQuery(
+                                    static_cast<MotorID>(motorId), plan.items[j]);
+                                if (!issued) {
+                                    continue;
+                                }
+                                issuedAny = true;
+                                std::lock_guard<std::mutex> lock(runtime->scheduleMutex);
+                                auto &scheduleState = runtime->ppScheduleStates[motorId];
+                                can_driver::NotePpRefreshQueryIssued(now, &scheduleState, plan.items[j]);
+                                runtime->ppMotorCursor = (index + 1) % motorIds.size();
+                                runtime->nextPpTick = std::chrono::steady_clock::now() +
+                                                      clampRefreshSleep(protocol->refreshSleepInterval());
+                                runtime->nextEligibleIssueTime = std::chrono::steady_clock::now() +
+                                                                 runtime->interFrameGap;
+                                runtime->pendingRefresh.protocol = CanType::PP;
+                                runtime->pendingRefresh.motorId = motorId;
+                                runtime->pendingRefresh.observedLastRxSteadyNs =
+                                    sharedAxisLastRxNs(sharedState, runtime->deviceName, CanType::PP, motorId);
+                                runtime->pendingRefresh.deadline = std::chrono::steady_clock::now() +
+                                                                   clampRefreshSleep(protocol->refreshSleepInterval());
+                                runtime->pendingRefresh.active = true;
+                                runtime->protocolRoundRobinCursor = (static_cast<std::size_t>(AttemptedProtocol::Dm));
+                            }
+                        }
+                    }
+                }
+
+                if (selected == AttemptedProtocol::Dm &&
+                    runtime->dmActive.load(std::memory_order_acquire) && !issuedAny) {
+                    const auto protocol = runtime->dmProtocol.lock();
+                    std::vector<std::uint8_t> motorIds;
+                    std::size_t cursor = 0;
+                    bool due = false;
+                    {
+                        std::lock_guard<std::mutex> lock(runtime->scheduleMutex);
+                        due = (runtime->nextDmTick == std::chrono::steady_clock::time_point {}) ||
+                              (now >= runtime->nextDmTick);
+                        if (due) {
+                            motorIds = runtime->dmMotorIds;
+                            cursor = runtime->dmMotorCursor;
+                        }
+                    }
+                    if (protocol && due && !motorIds.empty()) {
+                        for (std::size_t offset = 0; offset < motorIds.size() && !issuedAny; ++offset) {
+                            const std::size_t index = (cursor + offset) % motorIds.size();
+                            const auto motorId = motorIds[index];
+                            can_driver::DmRefreshPlan plan;
+                            {
+                                std::lock_guard<std::mutex> lock(runtime->scheduleMutex);
+                                auto &scheduleState = runtime->dmScheduleStates[motorId];
+                                plan = can_driver::BuildDmRefreshPlan(
+                                    now,
+                                    buildDmAxisRefreshSnapshot(sharedState,
+                                                               runtime->deviceName,
+                                                               motorId),
+                                    &scheduleState);
+                            }
+                            for (std::size_t i = 0; i < plan.count && !issuedAny; ++i) {
+                                const bool issued = protocol->issueRefreshQuery(
+                                    static_cast<MotorID>(motorId), plan.items[i]);
+                                if (!issued) {
+                                    continue;
+                                }
+                                issuedAny = true;
+                                std::lock_guard<std::mutex> lock(runtime->scheduleMutex);
+                                auto &scheduleState = runtime->dmScheduleStates[motorId];
+                                can_driver::NoteDmRefreshQueryIssued(now, &scheduleState, plan.items[i]);
+                                runtime->dmMotorCursor = (index + 1) % motorIds.size();
+                                runtime->nextDmTick = std::chrono::steady_clock::now() +
+                                                      clampRefreshSleep(protocol->refreshSleepInterval());
+                                runtime->nextEligibleIssueTime = std::chrono::steady_clock::now() +
+                                                                 runtime->interFrameGap;
+                                runtime->pendingRefresh.protocol = CanType::DM;
+                                runtime->pendingRefresh.motorId = motorId;
+                                runtime->pendingRefresh.observedLastRxSteadyNs =
+                                    sharedAxisLastRxNs(sharedState, runtime->deviceName, CanType::DM, motorId);
+                                runtime->pendingRefresh.deadline = std::chrono::steady_clock::now() +
+                                                                   clampRefreshSleep(protocol->refreshSleepInterval());
+                                runtime->pendingRefresh.active = true;
+                                runtime->protocolRoundRobinCursor = (static_cast<std::size_t>(AttemptedProtocol::Mt));
+                            }
+                        }
+                    }
+                }
+            }
+
+            if (!runtime->mtActive.load(std::memory_order_acquire)) {
                 std::lock_guard<std::mutex> lock(runtime->scheduleMutex);
                 runtime->nextMtTick = std::chrono::steady_clock::time_point {};
             }
-
-            if (runtime->ppActive.load(std::memory_order_acquire)) {
-                const auto protocol = runtime->ppProtocol.lock();
-                bool due = false;
-                std::vector<std::uint8_t> motorIds;
-                {
-                    std::lock_guard<std::mutex> lock(runtime->scheduleMutex);
-                    due = (runtime->nextPpTick == std::chrono::steady_clock::time_point {}) ||
-                          (now >= runtime->nextPpTick);
-                    if (due) {
-                        ++runtime->ppScheduleCycleCount;
-                        motorIds = runtime->ppMotorIds;
-                    }
-                }
-                if (protocol && due) {
-                    const auto sharedState = runtime->sharedState.lock();
-                    for (std::size_t i = 0; i < motorIds.size(); ++i) {
-                        const auto snapshot = buildPpAxisRefreshSnapshot(
-                            sharedState, runtime->deviceName, motorIds[i]);
-                        can_driver::PpRefreshPlan plan;
-                        {
-                            std::lock_guard<std::mutex> lock(runtime->scheduleMutex);
-                            auto &scheduleState = runtime->ppScheduleStates[motorIds[i]];
-                            plan = can_driver::BuildPpRefreshPlan(
-                                now, queryPressureActive, snapshot, &scheduleState);
-                            for (std::size_t j = 0; j < plan.count; ++j) {
-                                can_driver::NotePpRefreshQueryDue(
-                                    now, &scheduleState, plan.items[j]);
-                            }
-                        }
-                        for (std::size_t j = 0; j < plan.count; ++j) {
-                            const bool issued = protocol->issueRefreshQuery(
-                                static_cast<MotorID>(motorIds[i]), plan.items[j]);
-                            if (!issued) {
-                                continue;
-                            }
-                            std::lock_guard<std::mutex> lock(runtime->scheduleMutex);
-                            auto &scheduleState = runtime->ppScheduleStates[motorIds[i]];
-                            can_driver::NotePpRefreshQueryIssued(
-                                now, &scheduleState, plan.items[j]);
-                        }
-                    }
-                    const auto nextSleep = clampRefreshSleep(protocol->refreshSleepInterval());
-                    std::lock_guard<std::mutex> lock(runtime->scheduleMutex);
-                    runtime->nextPpTick = std::chrono::steady_clock::now() + nextSleep;
-                }
-            } else {
+            if (!runtime->ppActive.load(std::memory_order_acquire)) {
                 std::lock_guard<std::mutex> lock(runtime->scheduleMutex);
                 runtime->nextPpTick = std::chrono::steady_clock::time_point {};
             }
-
-            if (runtime->dmActive.load(std::memory_order_acquire)) {
-                const auto protocol = runtime->dmProtocol.lock();
-                bool due = false;
-                std::vector<std::uint8_t> motorIds;
-                {
-                    std::lock_guard<std::mutex> lock(runtime->scheduleMutex);
-                    due = (runtime->nextDmTick == std::chrono::steady_clock::time_point {}) ||
-                          (now >= runtime->nextDmTick);
-                    if (due) {
-                        motorIds = runtime->dmMotorIds;
-                    }
-                }
-                if (protocol && due) {
-                    const auto sharedState = runtime->sharedState.lock();
-                    for (const auto motorId : motorIds) {
-                        can_driver::DmRefreshPlan plan;
-                        {
-                            std::lock_guard<std::mutex> lock(runtime->scheduleMutex);
-                            auto &scheduleState = runtime->dmScheduleStates[motorId];
-                            plan = can_driver::BuildDmRefreshPlan(
-                                now,
-                                buildDmAxisRefreshSnapshot(sharedState,
-                                                           runtime->deviceName,
-                                                           motorId),
-                                &scheduleState);
-                        }
-                        for (std::size_t i = 0; i < plan.count; ++i) {
-                            const bool issued = protocol->issueRefreshQuery(
-                                static_cast<MotorID>(motorId), plan.items[i]);
-                            if (!issued) {
-                                continue;
-                            }
-                            std::lock_guard<std::mutex> lock(runtime->scheduleMutex);
-                            auto &scheduleState = runtime->dmScheduleStates[motorId];
-                            can_driver::NoteDmRefreshQueryIssued(
-                                now, &scheduleState, plan.items[i]);
-                        }
-                    }
-                    const auto nextSleep = clampRefreshSleep(protocol->refreshSleepInterval());
-                    std::lock_guard<std::mutex> lock(runtime->scheduleMutex);
-                    runtime->nextDmTick = std::chrono::steady_clock::now() + nextSleep;
-                }
-            } else {
+            if (!runtime->dmActive.load(std::memory_order_acquire)) {
                 std::lock_guard<std::mutex> lock(runtime->scheduleMutex);
                 runtime->nextDmTick = std::chrono::steady_clock::time_point {};
             }
@@ -368,6 +478,13 @@ void DeviceManager::syncDeviceRefreshRuntimeLocked(const std::string &device)
             {
                 std::lock_guard<std::mutex> lock(runtime->scheduleMutex);
                 if (runtime->mtActive.load(std::memory_order_acquire)) {
+                    if (runtime->nextEligibleIssueTime != std::chrono::steady_clock::time_point {}) {
+                        const auto frameGapWait = std::chrono::duration_cast<std::chrono::milliseconds>(
+                            runtime->nextEligibleIssueTime > now ? (runtime->nextEligibleIssueTime - now)
+                                                                 : std::chrono::steady_clock::duration::zero());
+                        sleepFor = hasPending ? std::min(sleepFor, frameGapWait) : frameGapWait;
+                        hasPending = true;
+                    }
                     if (runtime->nextMtTick == std::chrono::steady_clock::time_point {}) {
                         return std::chrono::milliseconds(1);
                     }

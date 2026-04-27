@@ -120,7 +120,7 @@ OperationalCoordinator::Result OperationalCoordinator::RequestInit(const std::st
 {
     return DoTransition(
         {SystemOpMode::Configured},
-        SystemOpMode::Armed,
+        SystemOpMode::Standby,
         [this, &device, loopback](std::string *detail) {
             if (!driverOps_.init_device) {
                 if (detail) {

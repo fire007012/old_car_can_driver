@@ -48,6 +48,10 @@ TEST(OperationalCoordinatorTest, TransitionMatrixFollowsLifecycleFlow)
 
     auto result = coordinator.RequestInit("fake0", false);
     ASSERT_TRUE(result.ok);
+    EXPECT_EQ(coordinator.mode(), can_driver::SystemOpMode::Standby);
+
+    result = coordinator.RequestEnable();
+    ASSERT_TRUE(result.ok);
     EXPECT_EQ(coordinator.mode(), can_driver::SystemOpMode::Armed);
 
     result = coordinator.RequestRelease();
@@ -62,10 +66,6 @@ TEST(OperationalCoordinatorTest, TransitionMatrixFollowsLifecycleFlow)
     ASSERT_TRUE(result.ok);
     EXPECT_EQ(coordinator.mode(), can_driver::SystemOpMode::Standby);
 
-    result = coordinator.RequestEnable();
-    ASSERT_TRUE(result.ok);
-    EXPECT_EQ(coordinator.mode(), can_driver::SystemOpMode::Armed);
-
     result = coordinator.RequestShutdown(false);
     ASSERT_TRUE(result.ok);
     EXPECT_EQ(coordinator.mode(), can_driver::SystemOpMode::Configured);
@@ -77,6 +77,7 @@ TEST(OperationalCoordinatorTest, AutoFaultDowngradeFromRunning)
 
     coordinator.SetConfigured();
     ASSERT_TRUE(coordinator.RequestInit("fake0", false).ok);
+    ASSERT_TRUE(coordinator.RequestEnable().ok);
     ASSERT_TRUE(coordinator.RequestRelease().ok);
     ASSERT_EQ(coordinator.mode(), can_driver::SystemOpMode::Running);
 
@@ -100,7 +101,7 @@ TEST(OperationalCoordinatorTest, RecoverFailureKeepsFaulted)
     EXPECT_EQ(coordinator.mode(), can_driver::SystemOpMode::Faulted);
 }
 
-TEST(OperationalCoordinatorTest, RecoverDoesNotImplicitlyEnterFaultedFromArmed)
+TEST(OperationalCoordinatorTest, RecoverFromStandbyIsIdempotent)
 {
     auto ops = makeHappyOps();
     ops.any_fault_active = []() {
@@ -110,12 +111,12 @@ TEST(OperationalCoordinatorTest, RecoverDoesNotImplicitlyEnterFaultedFromArmed)
     can_driver::OperationalCoordinator coordinator(ops);
     coordinator.SetConfigured();
     ASSERT_TRUE(coordinator.RequestInit("fake0", false).ok);
-    ASSERT_EQ(coordinator.mode(), can_driver::SystemOpMode::Armed);
+    ASSERT_EQ(coordinator.mode(), can_driver::SystemOpMode::Standby);
 
     const auto result = coordinator.RequestRecover();
-    EXPECT_FALSE(result.ok);
-    EXPECT_EQ(result.message, "cannot transition from Armed to Standby");
-    EXPECT_EQ(coordinator.mode(), can_driver::SystemOpMode::Armed);
+    EXPECT_TRUE(result.ok);
+    EXPECT_EQ(result.message, "already Standby");
+    EXPECT_EQ(coordinator.mode(), can_driver::SystemOpMode::Standby);
 }
 
 TEST(OperationalCoordinatorTest, InitHoldsCommandsBeforeArmingFreshLatch)
@@ -137,7 +138,7 @@ TEST(OperationalCoordinatorTest, InitHoldsCommandsBeforeArmingFreshLatch)
 
     const auto result = coordinator.RequestInit("fake0", false);
     ASSERT_TRUE(result.ok);
-    EXPECT_EQ(coordinator.mode(), can_driver::SystemOpMode::Armed);
+    EXPECT_EQ(coordinator.mode(), can_driver::SystemOpMode::Standby);
     EXPECT_EQ(holdOrder, 1);
     EXPECT_EQ(armOrder, 2);
 }

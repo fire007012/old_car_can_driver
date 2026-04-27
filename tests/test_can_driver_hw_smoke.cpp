@@ -957,7 +957,7 @@ TEST_F(CanDriverHWSmokeTest, DamiaoVelocityInitAcceptsStartupFeedbackWithoutPosi
 
     const auto initResult = hw.operationalCoordinator().RequestInit("fake0", false);
     EXPECT_TRUE(initResult.ok) << initResult.message;
-    EXPECT_EQ(hw.lifecycleMode(), can_driver::SystemOpMode::Armed);
+    EXPECT_EQ(hw.lifecycleMode(), can_driver::SystemOpMode::Standby);
     EXPECT_EQ(fakeDm->shutdownDeviceCalls(), 0);
 }
 
@@ -1024,7 +1024,7 @@ TEST_F(CanDriverHWSmokeTest, MotorCommandServiceEnable)
 
     ASSERT_TRUE(client.call(srv));
     EXPECT_TRUE(srv.response.success);
-    EXPECT_EQ(fakeDm->protocol()->enableCalls(), 2);
+    EXPECT_EQ(fakeDm->protocol()->enableCalls(), 1);
     EXPECT_EQ(fakeDm->protocol()->lastEnableMotor(), 0x141u);
 
     spinner.stop();
@@ -1147,7 +1147,7 @@ TEST_F(CanDriverHWSmokeTest, LifecycleServicesExposeCanonicalMessages)
     initSrv.request.loopback = false;
     ASSERT_TRUE(initClient.call(initSrv));
     EXPECT_TRUE(initSrv.response.success);
-    EXPECT_EQ(initSrv.response.message, "initialized (armed)");
+    EXPECT_EQ(initSrv.response.message, "initialized (standby)");
 
     can_driver::Init initAgainSrv;
     initAgainSrv.request.device = "fake0";
@@ -1250,6 +1250,10 @@ TEST_F(CanDriverHWSmokeTest, LifecycleStateTopicTracksCoordinatorMode)
 
     const auto initResult = hw.operationalCoordinator().RequestInit("fake0", false);
     ASSERT_TRUE(initResult.ok) << initResult.message;
+    ASSERT_TRUE(waitForState("Standby"));
+
+    const auto enableResult = hw.operationalCoordinator().RequestEnable();
+    ASSERT_TRUE(enableResult.ok) << enableResult.message;
     ASSERT_TRUE(waitForState("Armed"));
 
     const auto releaseResult = hw.operationalCoordinator().RequestRelease();
@@ -1784,7 +1788,7 @@ TEST_F(CanDriverHWSmokeTest, InitFailureRollsBackPreparedDevice)
     fakeDm->protocol()->setModeResult(true);
     const auto retriedInit = coordinator.RequestInit("fake0", false);
     EXPECT_TRUE(retriedInit.ok) << retriedInit.message;
-    EXPECT_EQ(coordinator.mode(), can_driver::SystemOpMode::Armed);
+    EXPECT_EQ(coordinator.mode(), can_driver::SystemOpMode::Standby);
     EXPECT_EQ(fakeDm->shutdownDeviceCalls(), 1);
 }
 
@@ -2951,6 +2955,10 @@ TEST_F(CanDriverHWSmokeTest, CspReleaseRequiresSharedStateModeMatchBeforeRunning
     auto &coordinator = hw.operationalCoordinator();
     const auto initResult = coordinator.RequestInit("fake0", false);
     ASSERT_TRUE(initResult.ok) << initResult.message;
+    EXPECT_EQ(coordinator.mode(), can_driver::SystemOpMode::Standby);
+
+    const auto enableResult = coordinator.RequestEnable();
+    ASSERT_TRUE(enableResult.ok) << enableResult.message;
     EXPECT_EQ(coordinator.mode(), can_driver::SystemOpMode::Armed);
 
     const auto axisKey = can_driver::MakeAxisKey("fake0", CanType::PP, static_cast<MotorID>(0x05));

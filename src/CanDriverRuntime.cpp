@@ -173,34 +173,6 @@ OperationalCoordinator::Result CanDriverRuntime::initializeLifecycleDevice(
             return prepareResult;
         }
 
-        const auto enableResult = lifecycleDriverOps_.enableDevice(targetDevice);
-        if (!enableResult.ok) {
-            const auto rollbackCurrent = lifecycleDriverOps_.shutdownDevice(targetDevice);
-            if (!rollbackCurrent.ok) {
-                ROS_ERROR("[CanDriverRuntime] Failed to roll back prepared device '%s' after enable failure: %s",
-                          targetDevice.c_str(),
-                          rollbackCurrent.message.c_str());
-            }
-
-            if (optional) {
-                ROS_WARN("[CanDriverRuntime] Optional device '%s' enable failed: %s",
-                         targetDevice.c_str(),
-                         enableResult.message.c_str());
-                optionalFailures.push_back(targetDevice + "(enable: " + enableResult.message + ")");
-                continue;
-            }
-
-            for (const auto& rollbackDevice : initializedDevices) {
-                const auto rollback = lifecycleDriverOps_.shutdownDevice(rollbackDevice);
-                if (!rollback.ok) {
-                    ROS_ERROR("[CanDriverRuntime] Failed to rollback initialized device '%s': %s",
-                              rollbackDevice.c_str(),
-                              rollback.message.c_str());
-                }
-            }
-            return enableResult;
-        }
-
         initializedDevices.push_back(targetDevice);
     }
 
@@ -222,7 +194,7 @@ OperationalCoordinator::Result CanDriverRuntime::initializeLifecycleDevice(
     active_.store(true, std::memory_order_release);
 
     std::ostringstream msg;
-    msg << "initialized (armed): ";
+    msg << "initialized (standby): ";
     for (std::size_t i = 0; i < initializedDevices.size(); ++i) {
         if (i > 0U) {
             msg << ", ";
