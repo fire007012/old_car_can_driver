@@ -519,6 +519,7 @@ public:
         std::lock_guard<std::mutex> lock(lifecycleMutex_);
         deviceRefreshRateHzCalls_.emplace_back(device, hz);
     }
+    void setRefreshInterFrameGapUs(uint32_t) override {}
     void setMtCommunicationTimeoutOnInitMs(uint32_t timeoutMs) override
     {
         std::lock_guard<std::mutex> lock(lifecycleMutex_);
@@ -844,6 +845,9 @@ protected:
         const auto initResult = coordinator.RequestInit("fake0", false);
         ASSERT_TRUE(initResult.ok) << initResult.message;
 
+        const auto enableResult = coordinator.RequestEnable();
+        ASSERT_TRUE(enableResult.ok) << enableResult.message;
+
         const auto releaseResult = coordinator.RequestRelease();
         ASSERT_TRUE(releaseResult.ok) << releaseResult.message;
     }
@@ -928,9 +932,13 @@ TEST_F(CanDriverHWSmokeTest, InitDefersDeviceActivationUntilLifecycleInit)
     EXPECT_EQ(fakeDm->deviceCount(), 1u);
 
     const auto deviceRefreshCalls = fakeDm->deviceRefreshRateHzCalls();
-    ASSERT_GE(deviceRefreshCalls.size(), 2u);
+    ASSERT_GE(deviceRefreshCalls.size(), 4u);
     EXPECT_EQ(deviceRefreshCalls.front().first, "fake0");
     EXPECT_DOUBLE_EQ(deviceRefreshCalls.front().second, 2.0);
+    EXPECT_EQ(deviceRefreshCalls[1].first, "fake0");
+    EXPECT_DOUBLE_EQ(deviceRefreshCalls[1].second, 0.0);
+    EXPECT_EQ(deviceRefreshCalls[2].first, "fake0");
+    EXPECT_DOUBLE_EQ(deviceRefreshCalls[2].second, 20.0);
     EXPECT_EQ(deviceRefreshCalls.back().first, "fake0");
     EXPECT_DOUBLE_EQ(deviceRefreshCalls.back().second, 0.0);
 
@@ -1156,6 +1164,11 @@ TEST_F(CanDriverHWSmokeTest, LifecycleServicesExposeCanonicalMessages)
     EXPECT_TRUE(initAgainSrv.response.success);
     EXPECT_EQ(initAgainSrv.response.message, "already initialized");
 
+    std_srvs::Trigger enableSrv;
+    ASSERT_TRUE(enableClient.call(enableSrv));
+    EXPECT_TRUE(enableSrv.response.success);
+    EXPECT_EQ(enableSrv.response.message, "enabled (armed)");
+
     std_srvs::Trigger resumeSrv;
     ASSERT_TRUE(resumeClient.call(resumeSrv));
     EXPECT_TRUE(resumeSrv.response.success);
@@ -1181,12 +1194,11 @@ TEST_F(CanDriverHWSmokeTest, LifecycleServicesExposeCanonicalMessages)
     EXPECT_TRUE(disableSrv.response.success);
     EXPECT_EQ(disableSrv.response.message, "disabled (standby)");
 
-    std_srvs::Trigger enableSrv;
-    ASSERT_TRUE(enableClient.call(enableSrv));
-    EXPECT_TRUE(enableSrv.response.success);
-    EXPECT_EQ(enableSrv.response.message, "enabled (armed)");
-
     std_srvs::Trigger enableAgainSrv;
+    ASSERT_TRUE(enableClient.call(enableAgainSrv));
+    EXPECT_TRUE(enableAgainSrv.response.success);
+    EXPECT_EQ(enableAgainSrv.response.message, "enabled (armed)");
+
     ASSERT_TRUE(enableClient.call(enableAgainSrv));
     EXPECT_TRUE(enableAgainSrv.response.success);
     EXPECT_EQ(enableAgainSrv.response.message, "already enabled");
@@ -2927,6 +2939,9 @@ TEST_F(CanDriverHWSmokeTest, ResumeAllowsAlignedCspTargetWithoutCommandChange)
     auto handle = posIface->getHandle("test_arm");
     const double alignedTarget = 1024.0 * (2.0 * M_PI / 65536.0);
     handle.setCommand(alignedTarget);
+
+    const auto enableResult = hw.operationalCoordinator().RequestEnable();
+    ASSERT_TRUE(enableResult.ok) << enableResult.message;
 
     const auto releaseResult = hw.operationalCoordinator().RequestRelease();
     ASSERT_TRUE(releaseResult.ok) << releaseResult.message;

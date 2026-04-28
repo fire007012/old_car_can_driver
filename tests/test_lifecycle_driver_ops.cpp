@@ -176,6 +176,8 @@ public:
     void startRefresh(const std::string &, CanType, const std::vector<MotorID> &) override {}
     void setRefreshRateHz(double) override {}
     void setDeviceRefreshRateHz(const std::string &, double) override {}
+    void setRefreshInterFrameGapUs(uint32_t) override {}
+    void setMtCommunicationTimeoutOnInitMs(uint32_t) override {}
     void setPpFastWriteEnabled(bool) override {}
     void setPpDefaultPositionVelocityRaw(int32_t) override {}
     void setPpPositionDefaultVelocityRaw(int32_t) override {}
@@ -496,6 +498,54 @@ TEST(LifecycleDriverOpsTest, EnableAllReportsRollbackFailureWhenDisableFails)
     EXPECT_TRUE(deviceManager->protocol()->isEnabled(static_cast<MotorID>(0x141)));
 }
 
+TEST(LifecycleDriverOpsTest, EnableAllMarksSharedStateEnabledForImmediateResume)
+{
+    auto deviceManager = std::make_shared<FakeDeviceManager>();
+    MotorActionExecutor executor(deviceManager);
+    can_driver::LifecycleDriverOps ops(deviceManager, &executor);
+    ops.setTargets({
+        MotorActionExecutor::Target{"joint_c", "fake1", CanType::PP, static_cast<MotorID>(0x201)},
+    });
+
+    const auto nowNs = can_driver::SharedDriverSteadyNowNs();
+    const auto axisKey = can_driver::MakeAxisKey("fake1", CanType::PP, static_cast<MotorID>(0x201));
+
+    can_driver::SharedDriverState::AxisFeedbackState feedback;
+    feedback.key = axisKey;
+    feedback.feedbackSeen = true;
+    feedback.enabled = false;
+    feedback.enabledValid = true;
+    feedback.fault = false;
+    feedback.faultValid = true;
+    feedback.lastRxSteadyNs = nowNs;
+    deviceManager->sharedState()->mutateAxisFeedback(
+        axisKey,
+        [&](can_driver::SharedDriverState::AxisFeedbackState *state) {
+            *state = feedback;
+        });
+
+    can_driver::SharedDriverState::DeviceHealthState deviceHealth;
+    deviceHealth.device = "fake1";
+    deviceHealth.transportReady = true;
+    deviceManager->sharedState()->mutateDeviceHealth(
+        "fake1",
+        [&](can_driver::SharedDriverState::DeviceHealthState *state) {
+            *state = deviceHealth;
+        });
+
+    const auto enableResult = ops.enableAll();
+    ASSERT_TRUE(enableResult.ok);
+
+    can_driver::SharedDriverState::AxisFeedbackState enabledFeedback;
+    ASSERT_TRUE(deviceManager->sharedState()->getAxisFeedback(axisKey, &enabledFeedback));
+    EXPECT_TRUE(enabledFeedback.enabled);
+    EXPECT_TRUE(enabledFeedback.enabledValid);
+
+    std::string detail;
+    EXPECT_TRUE(ops.motionHealthy(&detail));
+    EXPECT_TRUE(detail.empty());
+}
+
 TEST(LifecycleDriverOpsTest, InitializeDeviceFiltersTargetsByRequestedBus)
 {
     auto deviceManager = std::make_shared<FakeDeviceManager>();
@@ -514,6 +564,53 @@ TEST(LifecycleDriverOpsTest, InitializeDeviceFiltersTargetsByRequestedBus)
     EXPECT_EQ(deviceManager->protocol()->enableCalls(0x201), 0);
     EXPECT_EQ(deviceManager->protocol()->enableCalls(0x141), 0);
     EXPECT_EQ(deviceManager->protocol()->enableCalls(0x142), 0);
+}
+
+TEST(LifecycleDriverOpsTest, EnableAndMotionChecksStayWithinInitializedDeviceSubset)
+{
+    auto deviceManager = std::make_shared<FakeDeviceManager>();
+    MotorActionExecutor executor(deviceManager);
+    can_driver::LifecycleDriverOps ops(deviceManager, &executor);
+    ops.setTargets(makeTargets());
+
+    const auto initResult = ops.initializeDevice("fake1", true);
+    ASSERT_TRUE(initResult.ok);
+
+    const auto nowNs = can_driver::SharedDriverSteadyNowNs();
+    const auto axisKey = can_driver::MakeAxisKey("fake1", CanType::PP, static_cast<MotorID>(0x201));
+
+    can_driver::SharedDriverState::AxisFeedbackState feedback;
+    feedback.key = axisKey;
+    feedback.feedbackSeen = true;
+    feedback.enabled = false;
+    feedback.enabledValid = true;
+    feedback.fault = false;
+    feedback.faultValid = true;
+    feedback.lastRxSteadyNs = nowNs;
+    deviceManager->sharedState()->mutateAxisFeedback(
+        axisKey,
+        [&](can_driver::SharedDriverState::AxisFeedbackState *state) {
+            *state = feedback;
+        });
+
+    can_driver::SharedDriverState::DeviceHealthState deviceHealth;
+    deviceHealth.device = "fake1";
+    deviceHealth.transportReady = true;
+    deviceManager->sharedState()->mutateDeviceHealth(
+        "fake1",
+        [&](can_driver::SharedDriverState::DeviceHealthState *state) {
+            *state = deviceHealth;
+        });
+
+    const auto enableResult = ops.enableAll();
+    ASSERT_TRUE(enableResult.ok);
+    EXPECT_EQ(deviceManager->protocol()->enableCalls(0x201), 1);
+    EXPECT_EQ(deviceManager->protocol()->enableCalls(0x141), 0);
+    EXPECT_EQ(deviceManager->protocol()->enableCalls(0x142), 0);
+
+    std::string detail;
+    EXPECT_TRUE(ops.motionHealthy(&detail));
+    EXPECT_TRUE(detail.empty());
 }
 
 TEST(LifecycleDriverOpsTest, InitializeDeviceDoesNotEnableMotors)

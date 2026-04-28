@@ -48,6 +48,12 @@ private:
     };
 
     std::vector<MotorActionExecutor::Target> targetsSnapshot() const;
+    std::vector<MotorActionExecutor::Target> lifecycleTargetsSnapshot() const;
+    void activateTargetsForDevice(
+        const std::string &device,
+        const std::vector<MotorActionExecutor::Target> &deviceTargets) const;
+    void deactivateTargetsForDevice(const std::string &device) const;
+    void clearActiveTargets() const;
     Result makeMotorActionFailureResult(MotorActionExecutor::Status status,
                                         const char *rejectedMessage,
                                         const char *protocolUnavailableMessage) const;
@@ -73,6 +79,7 @@ private:
     std::shared_ptr<IDeviceManager> deviceManager_;
     const MotorActionExecutor *motorActionExecutor_{nullptr};
     mutable std::mutex targetsMutex_;
+    mutable std::vector<MotorActionExecutor::Target> activeTargets_;
     mutable std::mutex axisReadinessMutex_;
     AxisReadinessEvaluator axisReadinessEvaluator_{};
     mutable std::map<std::string, AxisRecoverTracker> axisRecoverTrackers_;

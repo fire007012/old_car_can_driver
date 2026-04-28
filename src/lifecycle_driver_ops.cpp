@@ -2,6 +2,7 @@
 #include "can_driver/lifecycle_driver_ops.hpp"
 #include "can_driver/SharedDriverState.h"
 
+#include <algorithm>
 #include <chrono>
 #include <thread>
 #include <utility>
@@ -59,6 +60,7 @@ void LifecycleDriverOps::configure(std::shared_ptr<IDeviceManager> deviceManager
         std::lock_guard<std::mutex> lock(targetsMutex_);
         deviceManager_ = std::move(deviceManager);
         motorActionExecutor_ = motorActionExecutor;
+        activeTargets_.clear();
     }
     std::lock_guard<std::mutex> readinessLock(axisReadinessMutex_);
     axisRecoverTrackers_.clear();
@@ -69,6 +71,7 @@ void LifecycleDriverOps::setTargets(std::vector<MotorActionExecutor::Target> tar
     {
         std::lock_guard<std::mutex> lock(targetsMutex_);
         targets_ = std::move(targets);
+        activeTargets_.clear();
     }
     std::lock_guard<std::mutex> readinessLock(axisReadinessMutex_);
     axisRecoverTrackers_.clear();
@@ -87,6 +90,53 @@ std::vector<MotorActionExecutor::Target> LifecycleDriverOps::targetsSnapshot() c
 {
     std::lock_guard<std::mutex> lock(targetsMutex_);
     return targets_;
+}
+
+std::vector<MotorActionExecutor::Target> LifecycleDriverOps::lifecycleTargetsSnapshot() const
+{
+    std::lock_guard<std::mutex> lock(targetsMutex_);
+    return activeTargets_.empty() ? targets_ : activeTargets_;
+}
+
+void LifecycleDriverOps::activateTargetsForDevice(
+    const std::string &device,
+    const std::vector<MotorActionExecutor::Target> &deviceTargets) const
+{
+    std::lock_guard<std::mutex> lock(targetsMutex_);
+    activeTargets_.erase(
+        std::remove_if(activeTargets_.begin(),
+                       activeTargets_.end(),
+                       [&device](const MotorActionExecutor::Target &target) {
+                           return target.canDevice == device;
+                       }),
+        activeTargets_.end());
+    activeTargets_.insert(activeTargets_.end(), deviceTargets.begin(), deviceTargets.end());
+}
+
+void LifecycleDriverOps::deactivateTargetsForDevice(const std::string &device) const
+{
+    {
+        std::lock_guard<std::mutex> lock(targetsMutex_);
+        activeTargets_.erase(
+            std::remove_if(activeTargets_.begin(),
+                           activeTargets_.end(),
+                           [&device](const MotorActionExecutor::Target &target) {
+                               return target.canDevice == device;
+                           }),
+            activeTargets_.end());
+    }
+    std::lock_guard<std::mutex> readinessLock(axisReadinessMutex_);
+    axisRecoverTrackers_.clear();
+}
+
+void LifecycleDriverOps::clearActiveTargets() const
+{
+    {
+        std::lock_guard<std::mutex> lock(targetsMutex_);
+        activeTargets_.clear();
+    }
+    std::lock_guard<std::mutex> readinessLock(axisReadinessMutex_);
+    axisRecoverTrackers_.clear();
 }
 
 LifecycleDriverOps::Result LifecycleDriverOps::makeMotorActionFailureResult(
@@ -274,6 +324,7 @@ LifecycleDriverOps::Result LifecycleDriverOps::initializeDevice(const std::strin
     if (!prepare.ok) {
         return prepare;
     }
+    activateTargetsForDevice(device, filterTargetsByDevice(targetsSnapshot(), device));
     return {true, "initialized (standby)"};
 }
 
@@ -284,6 +335,7 @@ LifecycleDriverOps::Result LifecycleDriverOps::shutdownDevice(const std::string 
     }
 
     deviceManager_->shutdownDevice(device);
+    deactivateTargetsForDevice(device);
     return {true, ""};
 }
 
@@ -357,7 +409,7 @@ LifecycleDriverOps::Result LifecycleDriverOps::enableAll() const
         return {false, "Motor action executor unavailable."};
     }
 
-    const auto targets = targetsSnapshot();
+    const auto targets = lifecycleTargetsSnapshot();
     if (targets.empty()) {
         return {false, "No joints available for enable."};
     }
@@ -390,13 +442,32 @@ LifecycleDriverOps::Result LifecycleDriverOps::enableAll() const
     if (!batch.anySuccess) {
         return {false, "No joints available for enable."};
     }
+
+    if (const auto sharedState = getSharedDriverState()) {
+        const auto nowNs = SharedDriverSteadyNowNs();
+        for (const auto &target : targets) {
+            const auto axisKey = MakeAxisKey(target.canDevice, target.protocol, target.motorId);
+            sharedState->mutateAxisFeedback(
+                axisKey,
+                [axisKey, nowNs](SharedDriverState::AxisFeedbackState *feedback) {
+                    feedback->key = axisKey;
+                    feedback->feedbackSeen = true;
+                    feedback->enabled = true;
+                    feedback->enabledValid = true;
+                    if (feedback->lastRxSteadyNs <= 0) {
+                        feedback->lastRxSteadyNs = nowNs;
+                    }
+                });
+        }
+    }
+
     return {true, "enabled (armed)"};
 }
 
 LifecycleDriverOps::Result LifecycleDriverOps::disableAll() const
 {
     return runMotorBatchAction(
-        targetsSnapshot(),
+        lifecycleTargetsSnapshot(),
         [](const std::shared_ptr<CanProtocol> &proto, MotorID id) {
             return proto->Disable(id);
         },
@@ -409,7 +480,7 @@ LifecycleDriverOps::Result LifecycleDriverOps::disableAll() const
 LifecycleDriverOps::Result LifecycleDriverOps::haltAll() const
 {
     return runMotorBatchAction(
-        targetsSnapshot(),
+        lifecycleTargetsSnapshot(),
         [](const std::shared_ptr<CanProtocol> &proto, MotorID id) {
             return proto->Stop(id);
         },
@@ -425,7 +496,7 @@ LifecycleDriverOps::Result LifecycleDriverOps::recoverAll() const
         return {false, "Motor action executor unavailable."};
     }
 
-    const auto targets = targetsSnapshot();
+    const auto targets = lifecycleTargetsSnapshot();
     if (targets.empty()) {
         return {false, "No motors available for recover."};
     }
@@ -513,12 +584,13 @@ LifecycleDriverOps::Result LifecycleDriverOps::shutdownAll(bool force) const
     }
 
     deviceManager_->shutdownAll();
+    clearActiveTargets();
     return {true, ""};
 }
 
 bool LifecycleDriverOps::anyFaultActive() const
 {
-    for (const auto &target : targetsSnapshot()) {
+    for (const auto &target : lifecycleTargetsSnapshot()) {
         bool hasFault = false;
         if (queryMotorFault(target, &hasFault) && hasFault) {
             return true;
@@ -529,7 +601,7 @@ bool LifecycleDriverOps::anyFaultActive() const
 
 bool LifecycleDriverOps::enableHealthy(std::string *detail) const
 {
-    for (const auto &target : targetsSnapshot()) {
+    for (const auto &target : lifecycleTargetsSnapshot()) {
         if (!isDeviceReady(target.canDevice)) {
             if (detail) {
                 *detail = "CAN device not ready.";
@@ -591,7 +663,7 @@ bool LifecycleDriverOps::enableHealthy(std::string *detail) const
 
 bool LifecycleDriverOps::motionHealthy(std::string *detail) const
 {
-    for (const auto &target : targetsSnapshot()) {
+    for (const auto &target : lifecycleTargetsSnapshot()) {
         if (!isDeviceReady(target.canDevice)) {
             if (detail) {
                 *detail = "CAN device not ready.";

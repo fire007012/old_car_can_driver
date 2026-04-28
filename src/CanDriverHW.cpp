@@ -426,6 +426,19 @@ bool CanDriverHW::syncStartupPositionAndCommands(const std::string &deviceFilter
         bool valid{false};
     };
 
+    const bool suspendDeviceRefresh = !deviceFilter.empty() && deviceManager_;
+    const double restoreRefreshRateHz = motorQueryHz_;
+    if (suspendDeviceRefresh) {
+        deviceManager_->setDeviceRefreshRateHz(deviceFilter, 0.0);
+    }
+
+    const auto restoreDeviceRefresh = [this, suspendDeviceRefresh, &deviceFilter, restoreRefreshRateHz]() {
+        if (!suspendDeviceRefresh || !deviceManager_) {
+            return;
+        }
+        deviceManager_->setDeviceRefreshRateHz(deviceFilter, restoreRefreshRateHz);
+    };
+
     std::vector<JointSnapshot> snapshots(joints_.size());
     std::vector<std::size_t> targetJointIndices;
     targetJointIndices.reserve(joints_.size());
@@ -436,6 +449,7 @@ bool CanDriverHW::syncStartupPositionAndCommands(const std::string &deviceFilter
         targetJointIndices.push_back(i);
     }
     if (targetJointIndices.empty()) {
+        restoreDeviceRefresh();
         return true;
     }
 
@@ -640,6 +654,7 @@ bool CanDriverHW::syncStartupPositionAndCommands(const std::string &deviceFilter
                               steadyAgeMs(stats.lastRxSteadyNs));
                 }
             }
+            restoreDeviceRefresh();
             return false;
         }
     } else {
@@ -717,6 +732,7 @@ bool CanDriverHW::syncStartupPositionAndCommands(const std::string &deviceFilter
 
     if (startupOutOfRange) {
         ROS_ERROR("[CanDriverHW] Startup position check failed. Refusing to activate to avoid limit violation.");
+        restoreDeviceRefresh();
         return false;
     }
 
@@ -726,6 +742,7 @@ bool CanDriverHW::syncStartupPositionAndCommands(const std::string &deviceFilter
         ROS_INFO("[CanDriverHW] Startup position sync finished for device '%s'.",
                  deviceFilter.c_str());
     }
+    restoreDeviceRefresh();
     return true;
 }
 
