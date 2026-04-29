@@ -66,6 +66,7 @@ public:
     void UpdateFromFeedback(bool unhealthy);
 
 private:
+    Result RevalidateArmedEnable();
     Result DoTransition(std::initializer_list<SystemOpMode> allowedFrom,
                         SystemOpMode to,
                         const std::function<bool(std::string *)> &action = nullptr);

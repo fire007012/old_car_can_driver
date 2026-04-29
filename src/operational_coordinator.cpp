@@ -115,6 +115,18 @@ OperationalCoordinator::Result OperationalCoordinator::DoTransition(
     return {true, detail};
 }
 
+OperationalCoordinator::Result OperationalCoordinator::RevalidateArmedEnable()
+{
+    std::string detail;
+    if (driverOps_.motion_healthy && !driverOps_.motion_healthy(&detail)) {
+        if (detail.empty()) {
+            detail = "armed enable validation failed";
+        }
+        return {false, detail};
+    }
+    return {true, "already Armed"};
+}
+
 OperationalCoordinator::Result OperationalCoordinator::RequestInit(const std::string &device,
                                                                   bool loopback)
 {
@@ -150,6 +162,13 @@ OperationalCoordinator::Result OperationalCoordinator::RequestInit(const std::st
 
 OperationalCoordinator::Result OperationalCoordinator::RequestEnable()
 {
+    if (mode_.load(std::memory_order_acquire) == SystemOpMode::Armed) {
+        std::lock_guard<std::mutex> lock(transitionMutex_);
+        if (mode_.load(std::memory_order_acquire) == SystemOpMode::Armed) {
+            return RevalidateArmedEnable();
+        }
+    }
+
     return DoTransition(
         {SystemOpMode::Standby},
         SystemOpMode::Armed,

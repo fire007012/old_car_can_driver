@@ -172,4 +172,34 @@ TEST(OperationalCoordinatorTest, EnableRejectsUnhealthyStandbyBeforeIssuingEnabl
     EXPECT_EQ(coordinator.mode(), can_driver::SystemOpMode::Standby);
 }
 
+TEST(OperationalCoordinatorTest, RepeatedEnableRevalidatesArmedMotionHealth)
+{
+    bool motionHealthy = true;
+
+    auto ops = makeHappyOps();
+    ops.motion_healthy = [&](std::string *detail) {
+        if (!motionHealthy && detail) {
+            *detail = "Axis not enabled.";
+        }
+        return motionHealthy;
+    };
+
+    can_driver::OperationalCoordinator coordinator(ops);
+    coordinator.SetConfigured();
+    ASSERT_TRUE(coordinator.RequestInit("fake0", false).ok);
+    ASSERT_TRUE(coordinator.RequestEnable().ok);
+    ASSERT_EQ(coordinator.mode(), can_driver::SystemOpMode::Armed);
+
+    auto result = coordinator.RequestEnable();
+    EXPECT_TRUE(result.ok);
+    EXPECT_EQ(result.message, "already Armed");
+    EXPECT_EQ(coordinator.mode(), can_driver::SystemOpMode::Armed);
+
+    motionHealthy = false;
+    result = coordinator.RequestEnable();
+    EXPECT_FALSE(result.ok);
+    EXPECT_EQ(result.message, "Axis not enabled.");
+    EXPECT_EQ(coordinator.mode(), can_driver::SystemOpMode::Armed);
+}
+
 } // namespace

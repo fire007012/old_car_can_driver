@@ -758,7 +758,8 @@ bool LifecycleDriverOps::enableHealthy(std::string *detail) const
                     deviceHealthPtr);
                 if (!AxisReadinessEvaluator::ReadyForEnable(readiness)) {
                     if (detail) {
-                        *detail = AxisReadinessEvaluator::DescribeBlockReason(readiness);
+                        *detail = target.name + ": " +
+                                  AxisReadinessEvaluator::DescribeBlockReason(readiness);
                     }
                     return false;
                 }
@@ -834,7 +835,8 @@ bool LifecycleDriverOps::motionHealthy(std::string *detail) const
                     deviceHealthPtr);
                 if (!AxisReadinessEvaluator::ReadyForRun(readiness)) {
                     if (detail) {
-                        *detail = AxisReadinessEvaluator::DescribeBlockReason(readiness);
+                        *detail = target.name + ": " +
+                                  AxisReadinessEvaluator::DescribeBlockReason(readiness);
                     }
                     return false;
                 }
