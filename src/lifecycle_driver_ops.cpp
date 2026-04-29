@@ -400,6 +400,26 @@ LifecycleDriverOps::Result LifecycleDriverOps::enableDevice(const std::string &d
                                             "Enable command rejected.",
                                             "Protocol not available.");
     }
+
+    const auto confirmed = waitForEnabledTargets(deviceTargets,
+                                                 std::chrono::seconds(2),
+                                                 std::chrono::milliseconds(50));
+    if (!confirmed.ok) {
+        const auto rollback = motorActionExecutor_->executeBatch(
+            deviceTargets,
+            [](const std::shared_ptr<CanProtocol> &proto, MotorID id) {
+                return proto->Disable(id);
+            },
+            "Init enable confirmation rollback");
+        if (rollback.anyFailure) {
+            return makeMotorActionFailureResult(
+                rollback.firstFailure,
+                "Init enable confirmation rollback failed after enable timeout.",
+                "Protocol not available during init enable confirmation rollback.");
+        }
+        return confirmed;
+    }
+
     return {true, "enabled (armed)"};
 }
 
@@ -443,22 +463,25 @@ LifecycleDriverOps::Result LifecycleDriverOps::enableAll() const
         return {false, "No joints available for enable."};
     }
 
-    if (const auto sharedState = getSharedDriverState()) {
-        const auto nowNs = SharedDriverSteadyNowNs();
-        for (const auto &target : targets) {
-            const auto axisKey = MakeAxisKey(target.canDevice, target.protocol, target.motorId);
-            sharedState->mutateAxisFeedback(
-                axisKey,
-                [axisKey, nowNs](SharedDriverState::AxisFeedbackState *feedback) {
-                    feedback->key = axisKey;
-                    feedback->feedbackSeen = true;
-                    feedback->enabled = true;
-                    feedback->enabledValid = true;
-                    if (feedback->lastRxSteadyNs <= 0) {
-                        feedback->lastRxSteadyNs = nowNs;
-                    }
-                });
+    const auto confirmed = waitForEnabledTargets(targets,
+                                                 std::chrono::seconds(2),
+                                                 std::chrono::milliseconds(50));
+    if (!confirmed.ok) {
+        if (!batch.succeededTargets.empty()) {
+            const auto rollback = motorActionExecutor_->executeBatch(
+                batch.succeededTargets,
+                [](const std::shared_ptr<CanProtocol> &proto, MotorID id) {
+                    return proto->Disable(id);
+                },
+                "Enable confirmation rollback");
+            if (rollback.anyFailure) {
+                return makeMotorActionFailureResult(
+                    rollback.firstFailure,
+                    "Enable confirmation rollback failed after enable timeout.",
+                    "Protocol not available during enable confirmation rollback.");
+            }
         }
+        return confirmed;
     }
 
     return {true, "enabled (armed)"};
@@ -586,6 +609,104 @@ LifecycleDriverOps::Result LifecycleDriverOps::shutdownAll(bool force) const
     deviceManager_->shutdownAll();
     clearActiveTargets();
     return {true, ""};
+}
+
+LifecycleDriverOps::Result LifecycleDriverOps::waitForEnabledTargets(
+    const std::vector<MotorActionExecutor::Target> &targets,
+    std::chrono::milliseconds timeout,
+    std::chrono::milliseconds pollInterval) const
+{
+    const auto deadline = std::chrono::steady_clock::now() + timeout;
+    std::string firstFailureDetail;
+
+    while (std::chrono::steady_clock::now() < deadline) {
+        bool allEnabled = true;
+        firstFailureDetail.clear();
+
+        for (const auto &target : targets) {
+            if (!isDeviceReady(target.canDevice)) {
+                allEnabled = false;
+                if (firstFailureDetail.empty()) {
+                    firstFailureDetail = "CAN device not ready.";
+                }
+                break;
+            }
+
+            if (const auto sharedState = getSharedDriverState()) {
+                const auto axisKey = MakeAxisKey(target.canDevice, target.protocol, target.motorId);
+                SharedDriverState::AxisFeedbackState feedback;
+                if (sharedState->getAxisFeedback(axisKey, &feedback)) {
+                    SharedDriverState::AxisCommandState command;
+                    const SharedDriverState::AxisCommandState *commandPtr =
+                        sharedState->getAxisCommand(axisKey, &command) ? &command : nullptr;
+
+                    SharedDriverState::DeviceHealthState deviceHealth;
+                    const SharedDriverState::DeviceHealthState *deviceHealthPtr =
+                        sharedState->getDeviceHealth(target.canDevice, &deviceHealth)
+                            ? &deviceHealth
+                            : nullptr;
+                    if (!feedback.faultValid) {
+                        bool hasFault = false;
+                        if (queryMotorFault(target, &hasFault)) {
+                            feedback.fault = hasFault;
+                            feedback.faultValid = true;
+                        }
+                    }
+                    if (!feedback.enabledValid || !feedback.enabled) {
+                        bool enabled = false;
+                        if (queryMotorEnabled(target, &enabled)) {
+                            feedback.enabled = enabled;
+                            feedback.enabledValid = true;
+                        }
+                    }
+
+                    const auto readiness = evaluateAxisReadiness(
+                        axisKey,
+                        feedback,
+                        commandPtr,
+                        AxisIntent::Enable,
+                        deviceHealthPtr);
+                    if (!(AxisReadinessEvaluator::ReadyForEnable(readiness) &&
+                          readiness.enabledReady)) {
+                        allEnabled = false;
+                        if (firstFailureDetail.empty()) {
+                            firstFailureDetail = target.name + ": " +
+                                                 AxisReadinessEvaluator::DescribeBlockReason(readiness);
+                        }
+                        break;
+                    }
+                    continue;
+                }
+            }
+
+            bool enabled = false;
+            if (!queryMotorEnabled(target, &enabled)) {
+                allEnabled = false;
+                if (firstFailureDetail.empty()) {
+                    firstFailureDetail = target.name + ": Protocol not available.";
+                }
+                break;
+            }
+            if (!enabled) {
+                allEnabled = false;
+                if (firstFailureDetail.empty()) {
+                    firstFailureDetail = target.name + ": Axis not enabled.";
+                }
+                break;
+            }
+        }
+
+        if (allEnabled) {
+            return {true, "enabled (armed)"};
+        }
+
+        std::this_thread::sleep_for(pollInterval);
+    }
+
+    if (firstFailureDetail.empty()) {
+        firstFailureDetail = "Axis not enabled.";
+    }
+    return {false, "Enable confirmation timeout: " + firstFailureDetail};
 }
 
 bool LifecycleDriverOps::anyFaultActive() const

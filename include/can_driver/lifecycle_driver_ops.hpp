@@ -63,6 +63,9 @@ private:
                                const char *rejectedMessage,
                                const char *protocolUnavailableMessage,
                                bool requireAnyTarget) const;
+    Result waitForEnabledTargets(const std::vector<MotorActionExecutor::Target> &targets,
+                                 std::chrono::milliseconds timeout,
+                                 std::chrono::milliseconds pollInterval) const;
     bool queryMotorFault(const MotorActionExecutor::Target &target, bool *hasFault) const;
     bool queryMotorEnabled(const MotorActionExecutor::Target &target, bool *enabled) const;
     std::shared_ptr<CanProtocol> getProtocol(const std::string &device, CanType type) const;

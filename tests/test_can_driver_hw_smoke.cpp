@@ -1826,6 +1826,74 @@ TEST_F(CanDriverHWSmokeTest, CspInitRejectsStartupPositionOutsideConfiguredLimit
     EXPECT_EQ(fakeDm->protocol()->setModeCalls(), 0);
 }
 
+TEST_F(CanDriverHWSmokeTest, CspInitAcceptsStartupPositionOnConfiguredUpperLimit)
+{
+    auto fakeDm = std::make_shared<FakeDeviceManager>();
+    fakeDm->protocol()->setFeedbackPosition(rawFromPprRadians(1.0));
+
+    CanDriverHW hw(fakeDm);
+
+    ros::NodeHandle nh;
+    ros::NodeHandle pnh(uniqueNs("can_driver_hw_smoke_csp_startup_limit_boundary"));
+
+    pnh.setParam("joints", makeSingleCspJoint());
+    setPositionLimits(pnh, "test_arm", -1.0, 1.0);
+
+    ASSERT_TRUE(hw.init(nh, pnh));
+
+    auto &coordinator = hw.operationalCoordinator();
+    const auto initResult = coordinator.RequestInit("fake0", false);
+    EXPECT_TRUE(initResult.ok) << initResult.message;
+    EXPECT_EQ(coordinator.mode(), can_driver::SystemOpMode::Standby);
+    EXPECT_EQ(fakeDm->protocol()->setModeCalls(), 1);
+}
+
+TEST_F(CanDriverHWSmokeTest, CspInitAcceptsStartupPositionWithinConfiguredTolerance)
+{
+    auto fakeDm = std::make_shared<FakeDeviceManager>();
+    fakeDm->protocol()->setFeedbackPosition(rawFromPprRadians(1.00005));
+
+    CanDriverHW hw(fakeDm);
+
+    ros::NodeHandle nh;
+    ros::NodeHandle pnh(uniqueNs("can_driver_hw_smoke_csp_startup_limit_tolerance"));
+
+    pnh.setParam("joints", makeSingleCspJoint());
+    setPositionLimits(pnh, "test_arm", -1.0, 1.0);
+    pnh.setParam("startup_position_limit_tolerance_rad", 1e-4);
+
+    ASSERT_TRUE(hw.init(nh, pnh));
+
+    auto &coordinator = hw.operationalCoordinator();
+    const auto initResult = coordinator.RequestInit("fake0", false);
+    EXPECT_TRUE(initResult.ok) << initResult.message;
+    EXPECT_EQ(coordinator.mode(), can_driver::SystemOpMode::Standby);
+    EXPECT_EQ(fakeDm->protocol()->setModeCalls(), 1);
+}
+
+TEST_F(CanDriverHWSmokeTest, CspInitRejectsStartupPositionOutsideConfiguredTolerance)
+{
+    auto fakeDm = std::make_shared<FakeDeviceManager>();
+    fakeDm->protocol()->setFeedbackPosition(rawFromPprRadians(1.0002));
+
+    CanDriverHW hw(fakeDm);
+
+    ros::NodeHandle nh;
+    ros::NodeHandle pnh(uniqueNs("can_driver_hw_smoke_csp_startup_limit_tolerance_reject"));
+
+    pnh.setParam("joints", makeSingleCspJoint());
+    setPositionLimits(pnh, "test_arm", -1.0, 1.0);
+    pnh.setParam("startup_position_limit_tolerance_rad", 1e-4);
+
+    ASSERT_TRUE(hw.init(nh, pnh));
+
+    auto &coordinator = hw.operationalCoordinator();
+    const auto initResult = coordinator.RequestInit("fake0", false);
+    EXPECT_FALSE(initResult.ok);
+    EXPECT_EQ(coordinator.mode(), can_driver::SystemOpMode::Configured);
+    EXPECT_EQ(fakeDm->protocol()->setModeCalls(), 0);
+}
+
 TEST_F(CanDriverHWSmokeTest, RunningCspJointUsesQuickSetPositionWithPprScale)
 {
     auto fakeDm = std::make_shared<FakeDeviceManager>();

@@ -34,7 +34,6 @@ long long steadyAgeMs(std::int64_t stampNs)
 }
 
 constexpr double kDefaultPpVelocityRadS = (10.0 * 2.0 * M_PI / 60.0);
-
 constexpr std::chrono::milliseconds kStartupProbeSingleRequestTimeout(250);
 
 const char *protocolDisplayName(CanType protocol)
@@ -272,6 +271,14 @@ bool CanDriverHW::loadRuntimeParams(const ros::NodeHandle &pnh)
         ROS_WARN("[CanDriverHW] Invalid startup_position_sync_timeout_sec=%.9g, fallback to 3.0s.",
                  startupPositionSyncTimeoutSec_);
         startupPositionSyncTimeoutSec_ = 3.0;
+    }
+    if (!pnh.getParam("startup_position_limit_tolerance_rad", startupPositionLimitToleranceRad_)) {
+        startupPositionLimitToleranceRad_ = 1e-4;
+    }
+    if (!std::isfinite(startupPositionLimitToleranceRad_) || startupPositionLimitToleranceRad_ < 0.0) {
+        ROS_WARN("[CanDriverHW] Invalid startup_position_limit_tolerance_rad=%.9g, fallback to 1e-4 rad.",
+                 startupPositionLimitToleranceRad_);
+        startupPositionLimitToleranceRad_ = 1e-4;
     }
     if (!pnh.getParam("startup_probe_query_hz", startupProbeQueryHz_)) {
         startupProbeQueryHz_ = 20.0;
@@ -710,7 +717,11 @@ bool CanDriverHW::syncStartupPositionAndCommands(const std::string &deviceFilter
                 // CSP 模式与 position 模式共用 posCmd，同样需要对齐。
                 jc.posCmd = jc.pos;
                 if (jc.hasLimits && jc.limits.has_position_limits) {
-                    if (jc.pos < jc.limits.min_position || jc.pos > jc.limits.max_position) {
+                    const double minAllowed =
+                        jc.limits.min_position - startupPositionLimitToleranceRad_;
+                    const double maxAllowed =
+                        jc.limits.max_position + startupPositionLimitToleranceRad_;
+                    if (jc.pos < minAllowed || jc.pos > maxAllowed) {
                         startupOutOfRange = true;
                         ROS_ERROR("[CanDriverHW] Joint '%s' startup position %.6f rad out of limits [%.6f, %.6f].",
                                   jc.name.c_str(),

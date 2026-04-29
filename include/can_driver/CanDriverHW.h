@@ -186,6 +186,7 @@ private:
     double ppPositionDefaultVelocityRadS_{0.0};
     double ppCspDefaultVelocityRadS_{0.0};
     double startupPositionSyncTimeoutSec_{1.0};
+    double startupPositionLimitToleranceRad_{1e-4};
     double startupProbeQueryHz_{5.0};
     double refreshInterFrameGapSec_{0.001};
     uint32_t mtCommunicationTimeoutOnInitMs_{0};

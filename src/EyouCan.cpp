@@ -455,9 +455,11 @@ bool EyouCan::Enable(MotorID Id)
         // does not retain/apply that velocity preconfiguration until the drive is enabled
         // again, so force the first post-enable position/CSP command path to resend 0x09.
         state.positionVelocityConfigured = false;
+        state.enabledReceived = false;
     }
     syncSharedIntent(motorId, can_driver::AxisIntent::Enable);
     sendWriteCommand(motorId, 0x10, 0x00000001, 4);
+    requestEnable(motorId);
     return true;
 }
 
@@ -468,8 +470,13 @@ bool EyouCan::Disable(MotorID Id)
     }
     uint8_t motorId = toProtocolNodeId(Id);
     registerManagedMotorId(Id);
+    {
+        std::lock_guard<std::mutex> stateLock(stateMutex);
+        motorStates[motorId].enabledReceived = false;
+    }
     syncSharedIntent(motorId, can_driver::AxisIntent::Disable);
     sendWriteCommand(motorId, 0x10, 0x00000000, 4);
+    requestEnable(motorId);
     return true;
 }
 
