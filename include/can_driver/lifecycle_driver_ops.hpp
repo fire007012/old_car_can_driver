@@ -68,6 +68,8 @@ private:
                                  std::chrono::milliseconds pollInterval) const;
     bool queryMotorFault(const MotorActionExecutor::Target &target, bool *hasFault) const;
     bool queryMotorEnabled(const MotorActionExecutor::Target &target, bool *enabled) const;
+    bool enableHealthyOnce(std::string *detail) const;
+    bool motionHealthyOnce(std::string *detail) const;
     std::shared_ptr<CanProtocol> getProtocol(const std::string &device, CanType type) const;
     std::shared_ptr<std::mutex> getDeviceMutex(const std::string &device) const;
     bool isDeviceReady(const std::string &device) const;

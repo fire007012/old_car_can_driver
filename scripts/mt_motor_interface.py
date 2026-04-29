@@ -15,8 +15,19 @@ from std_msgs.msg import Float64
 from can_driver.srv import MotorCommand, MotorCommandRequest
 
 
+MT_SEND_FRAME_BASE = 0x140
+
+
 def parse_motor_id(raw: str) -> int:
     return int(raw, 0)
+
+
+def mt_protocol_node_id(motor_id: int) -> int:
+    return motor_id - MT_SEND_FRAME_BASE if motor_id >= MT_SEND_FRAME_BASE else motor_id & 0xFF
+
+
+def mt_motor_ids_match(lhs: int, rhs: int) -> bool:
+    return lhs == rhs or mt_protocol_node_id(lhs) == mt_protocol_node_id(rhs)
 
 
 def parse_joint_motor_id(raw: Any) -> Optional[int]:
@@ -99,15 +110,18 @@ class MtMotorInterface:
         can_device_expect = str(self.profile.get("can_device", ""))
         discovered = self.discover_mt_joints()
 
-        # 优先：ID + can_device 精确匹配
+        # 优先：ID + can_device 精确匹配；兼容 0x143 与节点号 3 的现场写法。
         for item in discovered:
-            if item["motor_id"] == motor_id and item["device_match"]:
+            if mt_motor_ids_match(int(item["motor_id"]), motor_id) and item["device_match"]:
                 name = item["name"]
                 if name:
                     return name
 
         # 兼容：若 profile 的 can_device 已变化，允许按 ID 退化匹配。
-        fallback = [item for item in discovered if item["motor_id"] == motor_id and item["name"]]
+        fallback = [
+            item for item in discovered
+            if mt_motor_ids_match(int(item["motor_id"]), motor_id) and item["name"]
+        ]
         if len(fallback) == 1:
             selected = fallback[0]
             rospy.logwarn(
@@ -169,7 +183,7 @@ class MtMotorInterface:
                 normalized.add(int(x, 0) if isinstance(x, str) else int(x))
             except (ValueError, TypeError):
                 continue
-        if normalized and motor_id not in normalized:
+        if normalized and not any(mt_motor_ids_match(profile_id, motor_id) for profile_id in normalized):
             rospy.logwarn(
                 "[MT-IF] motor_id=0x%X 不在 profile '%s' 的 mt_motor_ids 中: %s，"
                 "继续执行（兼容适配后的现场配置）。",

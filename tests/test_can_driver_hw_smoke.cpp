@@ -756,12 +756,13 @@ protected:
         return joints;
     }
 
-    static XmlRpc::XmlRpcValue makeSingleMtPositionJoint(double zeroOffsetRad = 0.0)
+    static XmlRpc::XmlRpcValue makeSingleMtPositionJoint(double zeroOffsetRad = 0.0,
+                                                         uint16_t motorId = 0x144)
     {
         XmlRpc::XmlRpcValue joints;
         joints.setSize(1);
         joints[0]["name"] = "test_shoulder";
-        joints[0]["motor_id"] = static_cast<int>(0x144);
+        joints[0]["motor_id"] = static_cast<int>(motorId);
         joints[0]["protocol"] = "MT";
         joints[0]["can_device"] = "fake0";
         joints[0]["control_mode"] = "position";
@@ -1075,6 +1076,107 @@ TEST_F(CanDriverHWSmokeTest, MotorCommandServiceEnable)
 
     spinner.stop();
 }
+
+class CanDriverHWMtNodeAliasTest : public CanDriverHWSmokeTest,
+                                   public ::testing::WithParamInterface<std::tuple<uint16_t, uint16_t>> {
+};
+
+TEST_P(CanDriverHWMtNodeAliasTest, MotorCommandServiceAcceptsMtNodeIdAlias)
+{
+    const auto [nodeId, systemMotorId] = GetParam();
+    auto fakeDm = std::make_shared<FakeDeviceManager>();
+    CanDriverHW hw(fakeDm);
+
+    ros::NodeHandle nh;
+    ros::NodeHandle pnh(uniqueNs("can_driver_hw_smoke_mt_node_alias"));
+
+    pnh.setParam("joints", makeSingleMtPositionJoint(0.0, systemMotorId));
+    pnh.setParam("motor_state_period_sec", 0.2);
+
+    ASSERT_TRUE(hw.init(nh, pnh));
+    const auto initResult = hw.operationalCoordinator().RequestInit("fake0", false);
+    ASSERT_TRUE(initResult.ok) << initResult.message;
+
+    ros::AsyncSpinner spinner(1);
+    spinner.start();
+
+    const std::string srvName = pnh.resolveName("motor_command");
+    ros::ServiceClient client = nh.serviceClient<can_driver::MotorCommand>(srvName);
+    ASSERT_TRUE(client.waitForExistence(ros::Duration(1.0)));
+
+    can_driver::MotorCommand srv;
+    srv.request.motor_id = nodeId;
+    srv.request.command = can_driver::MotorCommand::Request::CMD_ENABLE;
+    srv.request.value = 0.0;
+
+    ASSERT_TRUE(client.call(srv));
+    EXPECT_TRUE(srv.response.success) << srv.response.message;
+    EXPECT_EQ(fakeDm->protocol()->enableCalls(), 1);
+    EXPECT_EQ(fakeDm->protocol()->lastEnableMotor(), systemMotorId);
+
+    spinner.stop();
+}
+
+TEST_P(CanDriverHWMtNodeAliasTest, MtNodeIdSetModeAliasUpdatesLocalDispatchMode)
+{
+    const auto [nodeId, systemMotorId] = GetParam();
+    auto fakeDm = std::make_shared<FakeDeviceManager>();
+    CanDriverHW hw(fakeDm);
+
+    ros::NodeHandle nh;
+    ros::NodeHandle pnh(uniqueNs("can_driver_hw_smoke_mt_node_mode_alias"));
+
+    auto joints = makeSingleMtPositionJoint(0.0, systemMotorId);
+    joints[0]["control_mode"] = "velocity";
+    pnh.setParam("joints", joints);
+    pnh.setParam("debug_bypass_ros_control", true);
+    pnh.setParam("motor_state_period_sec", 0.05);
+    pnh.setParam("safety_require_enabled_for_motion", false);
+
+    ASSERT_TRUE(hw.init(nh, pnh));
+    enterRunning(hw);
+
+    ros::AsyncSpinner spinner(1);
+    spinner.start();
+
+    ros::ServiceClient client = nh.serviceClient<can_driver::MotorCommand>(
+        pnh.resolveName("motor_command"));
+    ASSERT_TRUE(client.waitForExistence(ros::Duration(1.0)));
+
+    can_driver::MotorCommand setModeSrv;
+    setModeSrv.request.motor_id = nodeId;
+    setModeSrv.request.command = can_driver::MotorCommand::Request::CMD_SET_MODE;
+    setModeSrv.request.value = 0.0;
+    ASSERT_TRUE(client.call(setModeSrv));
+    ASSERT_TRUE(setModeSrv.response.success) << setModeSrv.response.message;
+    EXPECT_EQ(fakeDm->protocol()->setModeCalls(), 1);
+    EXPECT_EQ(fakeDm->protocol()->lastModeMotor(), systemMotorId);
+    EXPECT_EQ(fakeDm->protocol()->lastMode(), CanProtocol::MotorMode::Position);
+
+    ros::Publisher posPub = nh.advertise<std_msgs::Float64>(
+        pnh.resolveName("motor/test_shoulder/cmd_position"), 1);
+    for (int i = 0; i < 20 && posPub.getNumSubscribers() == 0; ++i) {
+        ros::Duration(0.01).sleep();
+    }
+
+    std_msgs::Float64 msg;
+    msg.data = 1.2;
+    posPub.publish(msg);
+    ros::Duration(0.05).sleep();
+    hw.write(ros::Time::now(), ros::Duration(0.01));
+
+    EXPECT_EQ(fakeDm->protocol()->positionCalls(), 1);
+    EXPECT_EQ(fakeDm->protocol()->lastPositionMotor(), systemMotorId);
+    EXPECT_EQ(fakeDm->protocol()->lastPosition(), 12);
+    EXPECT_EQ(fakeDm->protocol()->velocityCalls(), 0);
+
+    spinner.stop();
+}
+
+INSTANTIATE_TEST_SUITE_P(ShoulderMtMotors,
+                         CanDriverHWMtNodeAliasTest,
+                         ::testing::Values(std::make_tuple(0x03u, 0x143u),
+                                           std::make_tuple(0x04u, 0x144u)));
 
 TEST_F(CanDriverHWSmokeTest, RecoverServiceRejectsPerMotorLegacyRequest)
 {

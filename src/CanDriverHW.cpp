@@ -1,6 +1,7 @@
 #include "can_driver/AxisReadinessEvaluator.h"
 #include "can_driver/AxisCommandSemantics.h"
 #include "can_driver/CanDriverHW.h"
+#include "can_driver/MotorID.h"
 #include "can_driver/CanDriverIoRuntime.h"
 #include "can_driver/InnfosEcbProtocol.h"
 #include "can_driver/SafeCommand.h"
@@ -23,6 +24,21 @@
 namespace {
 
 using can_driver::toProtocolNodeId;
+
+bool motorIdMatchesJoint(uint16_t requestedMotorId,
+                         const can_driver::CanDriverJointConfig &candidate)
+{
+    const auto candidateMotorId = static_cast<uint16_t>(candidate.motorId);
+    if (candidateMotorId == requestedMotorId) {
+        return true;
+    }
+    if (candidate.protocol != CanType::MT) {
+        return false;
+    }
+    const auto requestedNodeId = can_driver::toMtProtocolNodeId(static_cast<MotorID>(requestedMotorId));
+    const auto candidateNodeId = can_driver::toMtProtocolNodeId(candidate.motorId);
+    return requestedNodeId == candidateNodeId;
+}
 
 long long steadyAgeMs(std::int64_t stampNs)
 {
@@ -1138,7 +1154,7 @@ bool CanDriverHW::lookupJointByMotorId(uint16_t motorId,
     const JointConfig *matched = nullptr;
     std::size_t matchCount = 0;
     for (const auto &candidate : joints_) {
-        if (static_cast<uint16_t>(candidate.motorId) == motorId) {
+        if (motorIdMatchesJoint(motorId, candidate)) {
             ++matchCount;
             if (matched == nullptr) {
                 matched = &candidate;
@@ -1176,7 +1192,7 @@ bool CanDriverHW::commitModeSwitch(uint16_t motorId, can_driver::AxisControlMode
     std::size_t matchedIndex = joints_.size();
     std::size_t matchCount = 0;
     for (std::size_t i = 0; i < joints_.size(); ++i) {
-        if (static_cast<uint16_t>(joints_[i].motorId) != motorId) {
+        if (!motorIdMatchesJoint(motorId, joints_[i])) {
             continue;
         }
         ++matchCount;
@@ -1210,10 +1226,14 @@ bool CanDriverHW::getZeroOffset(uint16_t motorId, double* zeroOffset) const
         return false;
     }
     std::lock_guard<std::mutex> lock(jointStateMutex_);
+    const JointConfig *matched = nullptr;
     std::size_t matchCount = 0;
     for (const auto &joint : joints_) {
-        if (static_cast<uint16_t>(joint.motorId) == motorId) {
+        if (motorIdMatchesJoint(motorId, joint)) {
             ++matchCount;
+            if (matched == nullptr) {
+                matched = &joint;
+            }
         }
     }
     if (matchCount > 1) {
@@ -1223,16 +1243,18 @@ bool CanDriverHW::getZeroOffset(uint16_t motorId, double* zeroOffset) const
                            matchCount);
         return false;
     }
-    const auto it = jointZeroOffsetRadByMotorId_.find(motorId);
-    if (it == jointZeroOffsetRadByMotorId_.end()) {
-        for (const auto &joint : joints_) {
-            if (static_cast<uint16_t>(joint.motorId) == motorId) {
-                *zeroOffset = joint.zeroOffsetRad;
-                return true;
-            }
-        }
+    if (matched == nullptr) {
         *zeroOffset = 0.0;
         return true;
+    }
+    const auto canonicalMotorId = static_cast<uint16_t>(matched->motorId);
+    auto it = jointZeroOffsetRadByMotorId_.find(canonicalMotorId);
+    if (it == jointZeroOffsetRadByMotorId_.end()) {
+        it = jointZeroOffsetRadByMotorId_.find(motorId);
+        if (it == jointZeroOffsetRadByMotorId_.end()) {
+            *zeroOffset = matched->zeroOffsetRad;
+            return true;
+        }
     }
     *zeroOffset = it->second;
     return true;
@@ -1244,14 +1266,18 @@ bool CanDriverHW::commitZero(uint16_t motorId,
                              bool applyToMotor)
 {
     std::lock_guard<std::mutex> lock(jointStateMutex_);
+    std::size_t matchedIndex = joints_.size();
     std::size_t matchCount = 0;
-    for (auto &joint : joints_) {
-        if (static_cast<uint16_t>(joint.motorId) != motorId) {
+    for (std::size_t i = 0; i < joints_.size(); ++i) {
+        if (!motorIdMatchesJoint(motorId, joints_[i])) {
             continue;
         }
         ++matchCount;
+        if (matchedIndex == joints_.size()) {
+            matchedIndex = i;
+        }
     }
-    if (matchCount != 1) {
+    if (matchCount != 1 || matchedIndex >= joints_.size()) {
         if (matchCount > 1) {
             ROS_ERROR("[CanDriverHW] Reject zero-offset commit for ambiguous motor_id=%u (%zu matches).",
                       static_cast<unsigned>(motorId),
@@ -1260,23 +1286,19 @@ bool CanDriverHW::commitZero(uint16_t motorId,
         return false;
     }
 
-    for (auto &joint : joints_) {
-        if (static_cast<uint16_t>(joint.motorId) != motorId) {
-            continue;
-        }
-        const double storedZeroOffset = applyToMotor ? 0.0 : zeroOffset;
-        const double rollbackZeroOffset = applyToMotor ? 0.0 : previousZeroOffset;
-        jointZeroOffsetRadByMotorId_[motorId] = storedZeroOffset;
-        const double previousJointZeroOffset = joint.zeroOffsetRad;
-        joint.zeroOffsetRad = storedZeroOffset;
-        if (ppLocalZeroOffsetPersistenceEnabled_ && !savePersistedLocalZeroOffsets()) {
-            jointZeroOffsetRadByMotorId_[motorId] = rollbackZeroOffset;
-            joint.zeroOffsetRad = previousJointZeroOffset;
-            return false;
-        }
-        return true;
+    auto &joint = joints_[matchedIndex];
+    const auto canonicalMotorId = static_cast<uint16_t>(joint.motorId);
+    const double storedZeroOffset = applyToMotor ? 0.0 : zeroOffset;
+    const double rollbackZeroOffset = applyToMotor ? 0.0 : previousZeroOffset;
+    jointZeroOffsetRadByMotorId_[canonicalMotorId] = storedZeroOffset;
+    const double previousJointZeroOffset = joint.zeroOffsetRad;
+    joint.zeroOffsetRad = storedZeroOffset;
+    if (ppLocalZeroOffsetPersistenceEnabled_ && !savePersistedLocalZeroOffsets()) {
+        jointZeroOffsetRadByMotorId_[canonicalMotorId] = rollbackZeroOffset;
+        joint.zeroOffsetRad = previousJointZeroOffset;
+        return false;
     }
-    return false;
+    return true;
 }
 
 bool CanDriverHW::commitLimits(uint16_t motorId,
@@ -1286,13 +1308,17 @@ bool CanDriverHW::commitLimits(uint16_t motorId,
                                bool applyToMotor)
 {
     std::lock_guard<std::mutex> lock(jointStateMutex_);
+    std::size_t matchedIndex = joints_.size();
     std::size_t matchCount = 0;
-    for (const auto &joint : joints_) {
-        if (static_cast<uint16_t>(joint.motorId) == motorId) {
+    for (std::size_t i = 0; i < joints_.size(); ++i) {
+        if (motorIdMatchesJoint(motorId, joints_[i])) {
             ++matchCount;
+            if (matchedIndex == joints_.size()) {
+                matchedIndex = i;
+            }
         }
     }
-    if (matchCount != 1) {
+    if (matchCount != 1 || matchedIndex >= joints_.size()) {
         if (matchCount > 1) {
             ROS_ERROR("[CanDriverHW] Reject limits commit for ambiguous motor_id=%u (%zu matches).",
                       static_cast<unsigned>(motorId),
@@ -1301,20 +1327,16 @@ bool CanDriverHW::commitLimits(uint16_t motorId,
         return false;
     }
 
-    for (auto &joint : joints_) {
-        if (static_cast<uint16_t>(joint.motorId) != motorId) {
-            continue;
-        }
-        joint.hasLimits = true;
-        joint.limits.has_position_limits = true;
-        joint.limits.min_position = baseMin;
-        joint.limits.max_position = baseMax;
-        const double storedZeroOffset = applyToMotor ? 0.0 : zeroOffset;
-        jointZeroOffsetRadByMotorId_[motorId] = storedZeroOffset;
-        joint.zeroOffsetRad = storedZeroOffset;
-        return true;
-    }
-    return false;
+    auto &joint = joints_[matchedIndex];
+    const auto canonicalMotorId = static_cast<uint16_t>(joint.motorId);
+    joint.hasLimits = true;
+    joint.limits.has_position_limits = true;
+    joint.limits.min_position = baseMin;
+    joint.limits.max_position = baseMax;
+    const double storedZeroOffset = applyToMotor ? 0.0 : zeroOffset;
+    jointZeroOffsetRadByMotorId_[canonicalMotorId] = storedZeroOffset;
+    joint.zeroOffsetRad = storedZeroOffset;
+    return true;
 }
 
 bool CanDriverHW::applyPersistedPpZeroOffsets(const std::string &deviceFilter)

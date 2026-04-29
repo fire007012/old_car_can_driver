@@ -744,6 +744,49 @@ TEST(LifecycleDriverOpsTest, EnableHealthyRejectsFaultedPpAxisFromSharedState)
     EXPECT_EQ(detail, "Fault still active.");
 }
 
+TEST(LifecycleDriverOpsTest, EnableHealthyWaitsForTransientFeedbackDegradationToRecover)
+{
+    auto deviceManager = std::make_shared<FakeDeviceManager>();
+    MotorActionExecutor executor(deviceManager);
+    can_driver::LifecycleDriverOps ops(deviceManager, &executor);
+    ops.setTargets({
+        MotorActionExecutor::Target{"joint_a", "fake0", CanType::MT, static_cast<MotorID>(0x141)},
+    });
+
+    const auto axisKey = can_driver::MakeAxisKey("fake0", CanType::MT, static_cast<MotorID>(0x141));
+    deviceManager->sharedState()->mutateDeviceHealth(
+        "fake0",
+        [](can_driver::SharedDriverState::DeviceHealthState *health) {
+            health->transportReady = true;
+        });
+    deviceManager->sharedState()->mutateAxisFeedback(
+        axisKey,
+        [](can_driver::SharedDriverState::AxisFeedbackState *feedback) {
+            feedback->feedbackSeen = true;
+            feedback->enabled = false;
+            feedback->enabledValid = true;
+            feedback->fault = false;
+            feedback->faultValid = true;
+            feedback->lastRxSteadyNs = can_driver::SharedDriverSteadyNowNs();
+            feedback->consecutiveTimeoutCount = 1;
+        });
+
+    std::thread recover([deviceManager, axisKey]() {
+        std::this_thread::sleep_for(std::chrono::milliseconds(60));
+        deviceManager->sharedState()->mutateAxisFeedback(
+            axisKey,
+            [](can_driver::SharedDriverState::AxisFeedbackState *feedback) {
+                feedback->lastRxSteadyNs = can_driver::SharedDriverSteadyNowNs();
+                feedback->consecutiveTimeoutCount = 0;
+            });
+    });
+
+    std::string detail;
+    EXPECT_TRUE(ops.enableHealthy(&detail));
+    EXPECT_TRUE(detail.empty());
+    recover.join();
+}
+
 TEST(LifecycleDriverOpsTest, MotionHealthyRequiresReadyDeviceAndClearedFaults)
 {
     auto deviceManager = std::make_shared<FakeDeviceManager>();
@@ -790,12 +833,55 @@ TEST(LifecycleDriverOpsTest, MotionHealthyUsesSharedStateDegradationBeforeProtoc
             feedback->enabled = true;
             feedback->enabledValid = true;
             feedback->faultValid = true;
+            feedback->lastRxSteadyNs = can_driver::SharedDriverSteadyNowNs();
             feedback->consecutiveTimeoutCount = 2;
         });
 
     std::string detail;
     EXPECT_FALSE(ops.motionHealthy(&detail));
     EXPECT_EQ(detail, "Feedback degraded.");
+}
+
+TEST(LifecycleDriverOpsTest, MotionHealthyAcceptsTransientSharedStateDegradationRecovery)
+{
+    auto deviceManager = std::make_shared<FakeDeviceManager>();
+    MotorActionExecutor executor(deviceManager);
+    can_driver::LifecycleDriverOps ops(deviceManager, &executor);
+    ops.setTargets({
+        MotorActionExecutor::Target{"joint_a", "fake0", CanType::MT, static_cast<MotorID>(0x141)},
+    });
+
+    const auto key = can_driver::MakeAxisKey("fake0", CanType::MT, static_cast<MotorID>(0x141));
+    deviceManager->sharedState()->mutateDeviceHealth(
+        "fake0",
+        [](can_driver::SharedDriverState::DeviceHealthState *health) {
+            health->transportReady = true;
+        });
+    deviceManager->sharedState()->mutateAxisFeedback(
+        key,
+        [](can_driver::SharedDriverState::AxisFeedbackState *feedback) {
+            feedback->feedbackSeen = true;
+            feedback->enabled = true;
+            feedback->enabledValid = true;
+            feedback->faultValid = true;
+            feedback->lastRxSteadyNs = can_driver::SharedDriverSteadyNowNs();
+            feedback->consecutiveTimeoutCount = 1;
+        });
+
+    std::thread recover([state = deviceManager->sharedState(), key]() {
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        state->mutateAxisFeedback(
+            key,
+            [](can_driver::SharedDriverState::AxisFeedbackState *feedback) {
+                feedback->lastRxSteadyNs = can_driver::SharedDriverSteadyNowNs();
+                feedback->consecutiveTimeoutCount = 0;
+            });
+    });
+
+    std::string detail;
+    EXPECT_TRUE(ops.motionHealthy(&detail));
+    EXPECT_TRUE(detail.empty());
+    recover.join();
 }
 
 TEST(LifecycleDriverOpsTest, AnyFaultActiveUsesSharedStateFeedback)

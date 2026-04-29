@@ -91,7 +91,7 @@ private:
     struct DeviceRefreshRuntime {
         struct PendingRefresh {
             CanType protocol{CanType::PP};
-            std::uint8_t motorId{0};
+            MotorID motorId{static_cast<MotorID>(0)};
             std::int64_t observedLastRxSteadyNs{0};
             std::chrono::steady_clock::time_point deadline {};
             bool active{false};
@@ -106,7 +106,7 @@ private:
         std::atomic<bool> mtActive{false};
         std::atomic<bool> ppActive{false};
         std::atomic<bool> dmActive{false};
-        std::vector<std::uint8_t> mtMotorIds;
+        std::vector<MotorID> mtMotorIds;
         std::vector<std::uint8_t> ppMotorIds;
         std::vector<std::uint8_t> dmMotorIds;
         std::unordered_map<std::uint8_t, can_driver::PpAxisRefreshScheduleState> ppScheduleStates;

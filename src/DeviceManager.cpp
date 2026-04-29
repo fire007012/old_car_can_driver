@@ -27,7 +27,7 @@ std::chrono::milliseconds clampRefreshSleep(std::chrono::milliseconds sleepFor)
 std::int64_t sharedAxisLastRxNs(const std::shared_ptr<can_driver::SharedDriverState> &sharedState,
                                 const std::string &deviceName,
                                 CanType protocol,
-                                std::uint8_t motorId)
+                                MotorID motorId)
 {
     if (!sharedState) {
         return 0;
@@ -35,7 +35,7 @@ std::int64_t sharedAxisLastRxNs(const std::shared_ptr<can_driver::SharedDriverSt
 
     can_driver::SharedDriverState::AxisFeedbackState feedback;
     if (!sharedState->getAxisFeedback(
-            can_driver::MakeAxisKey(deviceName, protocol, static_cast<MotorID>(motorId)),
+            can_driver::MakeAxisKey(deviceName, protocol, motorId),
             &feedback)) {
         return 0;
     }
@@ -57,6 +57,17 @@ std::vector<std::uint8_t> normalizeMotorIds(const std::vector<MotorID> &motorIds
     return normalized;
 }
 
+std::vector<MotorID> normalizeMtSystemMotorIds(const std::vector<MotorID> &motorIds)
+{
+    std::vector<MotorID> normalized;
+    normalized.reserve(motorIds.size());
+    for (const auto motorId : motorIds) {
+        normalized.push_back(can_driver::motorIdFromMtProtocolNodeId(
+            can_driver::toMtProtocolNodeId(motorId)));
+    }
+    return normalized;
+}
+
 can_driver::PpAxisRefreshSnapshot buildPpAxisRefreshSnapshot(
     const std::shared_ptr<can_driver::SharedDriverState> &sharedState,
     const std::string &deviceName,
@@ -68,7 +79,8 @@ can_driver::PpAxisRefreshSnapshot buildPpAxisRefreshSnapshot(
     }
 
     const auto axisKey =
-        can_driver::MakeAxisKey(deviceName, CanType::PP, static_cast<MotorID>(motorId));
+        can_driver::MakeAxisKey(deviceName, CanType::PP,
+                                can_driver::motorIdFromProtocolNodeId(motorId));
 
     can_driver::SharedDriverState::AxisFeedbackState feedback;
     if (sharedState->getAxisFeedback(axisKey, &feedback)) {
@@ -106,7 +118,8 @@ can_driver::DmAxisRefreshSnapshot buildDmAxisRefreshSnapshot(
     }
 
     const auto axisKey =
-        can_driver::MakeAxisKey(deviceName, CanType::DM, static_cast<MotorID>(motorId));
+        can_driver::MakeAxisKey(deviceName, CanType::DM,
+                                can_driver::motorIdFromProtocolNodeId(motorId));
 
     can_driver::SharedDriverState::AxisFeedbackState feedback;
     if (sharedState->getAxisFeedback(axisKey, &feedback)) {
@@ -293,7 +306,7 @@ void DeviceManager::syncDeviceRefreshRuntimeLocked(const std::string &device)
                 if (selected == AttemptedProtocol::Mt &&
                     runtime->mtActive.load(std::memory_order_acquire)) {
                     const auto protocol = runtime->mtProtocol.lock();
-                    std::vector<std::uint8_t> motorIds;
+                    std::vector<MotorID> motorIds;
                     std::size_t cursor = 0;
                     std::uint64_t cycle = 0;
                     bool due = false;
@@ -313,7 +326,7 @@ void DeviceManager::syncDeviceRefreshRuntimeLocked(const std::string &device)
                             const auto motorId = motorIds[index];
                             const auto plan = can_driver::BuildMtRefreshPlan(cycle, index, queryPressureActive);
                             for (std::size_t j = 0; j < plan.count && !issuedAny; ++j) {
-                                protocol->issueRefreshQuery(static_cast<MotorID>(motorId), plan.items[j]);
+                                protocol->issueRefreshQuery(motorId, plan.items[j]);
                                 issuedAny = true;
                                 std::lock_guard<std::mutex> lock(runtime->scheduleMutex);
                                 runtime->mtMotorCursor = (index + 1) % motorIds.size();
@@ -354,6 +367,7 @@ void DeviceManager::syncDeviceRefreshRuntimeLocked(const std::string &device)
                         for (std::size_t offset = 0; offset < motorIds.size() && !issuedAny; ++offset) {
                             const std::size_t index = (cursor + offset) % motorIds.size();
                             const auto motorId = motorIds[index];
+                            const auto systemMotorId = can_driver::motorIdFromProtocolNodeId(motorId);
                             const auto snapshot = buildPpAxisRefreshSnapshot(
                                 sharedState, runtime->deviceName, motorId);
                             can_driver::PpRefreshPlan plan;
@@ -367,8 +381,7 @@ void DeviceManager::syncDeviceRefreshRuntimeLocked(const std::string &device)
                                 }
                             }
                             for (std::size_t j = 0; j < plan.count && !issuedAny; ++j) {
-                                const bool issued = protocol->issueRefreshQuery(
-                                    static_cast<MotorID>(motorId), plan.items[j]);
+                                const bool issued = protocol->issueRefreshQuery(systemMotorId, plan.items[j]);
                                 if (!issued) {
                                     continue;
                                 }
@@ -382,9 +395,9 @@ void DeviceManager::syncDeviceRefreshRuntimeLocked(const std::string &device)
                                 runtime->nextEligibleIssueTime = std::chrono::steady_clock::now() +
                                                                  runtime->interFrameGap;
                                 runtime->pendingRefresh.protocol = CanType::PP;
-                                runtime->pendingRefresh.motorId = motorId;
+                                runtime->pendingRefresh.motorId = systemMotorId;
                                 runtime->pendingRefresh.observedLastRxSteadyNs =
-                                    sharedAxisLastRxNs(sharedState, runtime->deviceName, CanType::PP, motorId);
+                                    sharedAxisLastRxNs(sharedState, runtime->deviceName, CanType::PP, systemMotorId);
                                 runtime->pendingRefresh.deadline = std::chrono::steady_clock::now() +
                                                                    clampRefreshSleep(protocol->refreshSleepInterval());
                                 runtime->pendingRefresh.active = true;
@@ -413,6 +426,7 @@ void DeviceManager::syncDeviceRefreshRuntimeLocked(const std::string &device)
                         for (std::size_t offset = 0; offset < motorIds.size() && !issuedAny; ++offset) {
                             const std::size_t index = (cursor + offset) % motorIds.size();
                             const auto motorId = motorIds[index];
+                            const auto systemMotorId = can_driver::motorIdFromProtocolNodeId(motorId);
                             can_driver::DmRefreshPlan plan;
                             {
                                 std::lock_guard<std::mutex> lock(runtime->scheduleMutex);
@@ -425,8 +439,7 @@ void DeviceManager::syncDeviceRefreshRuntimeLocked(const std::string &device)
                                     &scheduleState);
                             }
                             for (std::size_t i = 0; i < plan.count && !issuedAny; ++i) {
-                                const bool issued = protocol->issueRefreshQuery(
-                                    static_cast<MotorID>(motorId), plan.items[i]);
+                                const bool issued = protocol->issueRefreshQuery(systemMotorId, plan.items[i]);
                                 if (!issued) {
                                     continue;
                                 }
@@ -440,9 +453,9 @@ void DeviceManager::syncDeviceRefreshRuntimeLocked(const std::string &device)
                                 runtime->nextEligibleIssueTime = std::chrono::steady_clock::now() +
                                                                  runtime->interFrameGap;
                                 runtime->pendingRefresh.protocol = CanType::DM;
-                                runtime->pendingRefresh.motorId = motorId;
+                                runtime->pendingRefresh.motorId = systemMotorId;
                                 runtime->pendingRefresh.observedLastRxSteadyNs =
-                                    sharedAxisLastRxNs(sharedState, runtime->deviceName, CanType::DM, motorId);
+                                    sharedAxisLastRxNs(sharedState, runtime->deviceName, CanType::DM, systemMotorId);
                                 runtime->pendingRefresh.deadline = std::chrono::steady_clock::now() +
                                                                    clampRefreshSleep(protocol->refreshSleepInterval());
                                 runtime->pendingRefresh.active = true;
@@ -888,7 +901,7 @@ bool DeviceManager::initDevice(const std::string &device,
         mtProtocols_[device]->initializeMotorRefresh(mtIds);
         runtime->mtActive.store(true, std::memory_order_release);
         std::lock_guard<std::mutex> lock(runtime->scheduleMutex);
-        runtime->mtMotorIds = normalizeMotorIds(mtIds, CanType::MT);
+        runtime->mtMotorIds = normalizeMtSystemMotorIds(mtIds);
         runtime->mtScheduleCycleCount = 0;
         runtime->nextMtTick = std::chrono::steady_clock::time_point {};
     } else {
@@ -957,7 +970,7 @@ void DeviceManager::startRefresh(const std::string &device,
             syncDeviceRefreshRuntimeLocked(device);
             auto runtime = deviceRefreshRuntimes_[device];
             runtime->mtActive.store(!ids.empty(), std::memory_order_release);
-            const auto normalizedIds = normalizeMotorIds(ids, CanType::MT);
+            const auto normalizedIds = normalizeMtSystemMotorIds(ids);
             {
                 std::lock_guard<std::mutex> scheduleLock(runtime->scheduleMutex);
                 if (runtime->mtMotorIds != normalizedIds) {

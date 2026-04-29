@@ -830,6 +830,7 @@ void MtCan::syncSharedFeedback(uint8_t motorId, const MotorState &state) const
             feedback->lastRxSteadyNs = nowNs;
             feedback->lastValidStateSteadyNs = nowNs;
             feedback->consecutiveTimeoutCount = 0;
+            feedback->degraded = false;
         });
 }
 

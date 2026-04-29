@@ -6,7 +6,7 @@ profiles:
     description: "车辆A MT配置"
     driver_ns: "/can_driver_node"
     can_device: "can0"
-    mt_motor_ids: [0x141, 0x142]
+    mt_motor_ids: [0x141, 0x142, 0x143, 0x144]
 
   car_b:
     description: "车辆B MT配置（示例）"

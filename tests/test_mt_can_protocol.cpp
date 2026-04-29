@@ -437,6 +437,39 @@ TEST_F(MtCanTest, IssueRefreshQueryBacksOffAfterRepeatedReadTimeouts)
     EXPECT_TRUE(feedback.degraded);
 }
 
+TEST_F(MtCanTest, FreshFeedbackClearsSharedTimeoutDegradedState)
+{
+    constexpr MotorID kMotorId = static_cast<MotorID>(0x01);
+
+    mt.issueRefreshQuery(kMotorId, MtCan::RefreshQuery::State);
+    ASSERT_EQ(transport->sentFrames.size(), 1u);
+
+    MtCanTestAccessor::ageAllPendingRequests(mt, std::chrono::milliseconds(40));
+    mt.issueRefreshQuery(kMotorId, MtCan::RefreshQuery::State);
+
+    can_driver::SharedDriverState::AxisFeedbackState feedback;
+    ASSERT_TRUE(sharedState->getAxisFeedback(
+        can_driver::MakeAxisKey("can0", CanType::MT, kMotorId), &feedback));
+    ASSERT_EQ(feedback.consecutiveTimeoutCount, 1u);
+    ASSERT_TRUE(feedback.degraded);
+
+    CanTransport::Frame frame;
+    frame.id = 0x241;
+    frame.dlc = 8;
+    frame.isExtended = false;
+    frame.data.fill(0);
+    frame.data[0] = 0x9C;
+    frame.data[4] = 0x34;
+    frame.data[5] = 0x12;
+    transport->simulateReceive(frame);
+
+    ASSERT_TRUE(sharedState->getAxisFeedback(
+        can_driver::MakeAxisKey("can0", CanType::MT, kMotorId), &feedback));
+    EXPECT_EQ(feedback.consecutiveTimeoutCount, 0u);
+    EXPECT_FALSE(feedback.degraded);
+    EXPECT_TRUE(feedback.feedbackSeen);
+}
+
 TEST_F(MtCanTest, SlowRefreshRateDoesNotPrematurelyTimeoutReadRequests)
 {
     mt.setRefreshRateHz(5.0);

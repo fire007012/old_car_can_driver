@@ -722,6 +722,31 @@ bool LifecycleDriverOps::anyFaultActive() const
 
 bool LifecycleDriverOps::enableHealthy(std::string *detail) const
 {
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(750);
+    std::string lastDetail;
+    while (true) {
+        lastDetail.clear();
+        if (enableHealthyOnce(&lastDetail)) {
+            if (detail) {
+                detail->clear();
+            }
+            return true;
+        }
+
+        const bool retryable = lastDetail.find("Feedback degraded.") != std::string::npos ||
+                               lastDetail.find("Feedback offline.") != std::string::npos;
+        if (!retryable || std::chrono::steady_clock::now() >= deadline) {
+            if (detail) {
+                *detail = lastDetail;
+            }
+            return false;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    }
+}
+
+bool LifecycleDriverOps::enableHealthyOnce(std::string *detail) const
+{
     for (const auto &target : lifecycleTargetsSnapshot()) {
         if (!isDeviceReady(target.canDevice)) {
             if (detail) {
@@ -784,6 +809,31 @@ bool LifecycleDriverOps::enableHealthy(std::string *detail) const
 }
 
 bool LifecycleDriverOps::motionHealthy(std::string *detail) const
+{
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(1250);
+    std::string lastDetail;
+    while (true) {
+        lastDetail.clear();
+        if (motionHealthyOnce(&lastDetail)) {
+            if (detail) {
+                detail->clear();
+            }
+            return true;
+        }
+
+        const bool retryable = lastDetail.find("Feedback degraded.") != std::string::npos ||
+                               lastDetail.find("Feedback offline.") != std::string::npos;
+        if (!retryable || std::chrono::steady_clock::now() >= deadline) {
+            if (detail) {
+                *detail = lastDetail;
+            }
+            return false;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    }
+}
+
+bool LifecycleDriverOps::motionHealthyOnce(std::string *detail) const
 {
     for (const auto &target : lifecycleTargetsSnapshot()) {
         if (!isDeviceReady(target.canDevice)) {
