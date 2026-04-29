@@ -543,8 +543,9 @@ bool CanDriverHW::syncStartupPositionAndCommands(const std::string &deviceFilter
                 }
 
                 snapshots[i].pos = feedback.positionValid
-                                       ? static_cast<double>(feedback.position) *
-                                             can_driver::effectivePositionScale(jc)
+                                   ? can_driver::rawPositionToJointPosition(
+                                       jc,
+                                       static_cast<double>(feedback.position))
                                        : 0.0;
                 snapshots[i].vel = feedback.velocityValid
                                        ? static_cast<double>(feedback.velocity) *
@@ -682,8 +683,9 @@ bool CanDriverHW::syncStartupPositionAndCommands(const std::string &deviceFilter
                 for (const std::size_t i : group.jointIndices) {
                     const auto &jc = joints_[i];
                     snapshots[i].pos =
-                        static_cast<double>(proto->getPosition(jc.motorId)) *
-                        can_driver::effectivePositionScale(jc);
+                        can_driver::rawPositionToJointPosition(
+                            jc,
+                            static_cast<double>(proto->getPosition(jc.motorId)));
                     snapshots[i].vel =
                         static_cast<double>(proto->getVelocity(jc.motorId)) *
                         can_driver::effectiveVelocityScale(jc);
@@ -818,6 +820,13 @@ bool CanDriverHW::parseAndSetupJoints(const ros::NodeHandle &pnh)
         jc.positionScale = p.positionScale;
         jc.velocityScale = p.velocityScale;
         jc.directionSign = p.directionSign;
+        jc.zeroOffsetRad = p.zeroOffsetRad;
+        const auto zeroOffsetIt = jointZeroOffsetRadByMotorId_.find(motorId);
+        if (zeroOffsetIt != jointZeroOffsetRadByMotorId_.end()) {
+            jc.zeroOffsetRad = zeroOffsetIt->second;
+        } else if (std::isfinite(jc.zeroOffsetRad) && jc.zeroOffsetRad != 0.0) {
+            jointZeroOffsetRadByMotorId_[motorId] = jc.zeroOffsetRad;
+        }
         jc.ipMaxVelocity = p.ipMaxVelocity;
         jc.ipMaxAcceleration = p.ipMaxAcceleration;
         jc.ipMaxJerk = p.ipMaxJerk;
@@ -1015,14 +1024,14 @@ void CanDriverHW::configureMotorMaintenanceService(MotorMaintenanceService &serv
         [this](uint16_t motorId, can_driver::AxisControlMode mode) {
             return commitModeSwitch(motorId, mode);
         },
-        [this](uint16_t motorId, double zeroOffset, double previousZeroOffset) {
-            return commitZero(motorId, zeroOffset, previousZeroOffset);
+        [this](uint16_t motorId, double zeroOffset, double previousZeroOffset, bool applyToMotor) {
+            return commitZero(motorId, zeroOffset, previousZeroOffset, applyToMotor);
         },
         [this](uint16_t motorId, double* zeroOffset) {
             return getZeroOffset(motorId, zeroOffset);
         },
-        [this](uint16_t motorId, double baseMin, double baseMax, double zeroOffset) {
-            return commitLimits(motorId, baseMin, baseMax, zeroOffset);
+        [this](uint16_t motorId, double baseMin, double baseMax, double zeroOffset, bool applyToMotor) {
+            return commitLimits(motorId, baseMin, baseMax, zeroOffset, applyToMotor);
         },
         [this](const JointConfig &joint, can_driver::SharedDriverState::AxisFeedbackState *feedback) {
             return getFreshAxisFeedback(joint, feedback);
@@ -1216,6 +1225,12 @@ bool CanDriverHW::getZeroOffset(uint16_t motorId, double* zeroOffset) const
     }
     const auto it = jointZeroOffsetRadByMotorId_.find(motorId);
     if (it == jointZeroOffsetRadByMotorId_.end()) {
+        for (const auto &joint : joints_) {
+            if (static_cast<uint16_t>(joint.motorId) == motorId) {
+                *zeroOffset = joint.zeroOffsetRad;
+                return true;
+            }
+        }
         *zeroOffset = 0.0;
         return true;
     }
@@ -1225,7 +1240,8 @@ bool CanDriverHW::getZeroOffset(uint16_t motorId, double* zeroOffset) const
 
 bool CanDriverHW::commitZero(uint16_t motorId,
                              double zeroOffset,
-                             double previousZeroOffset)
+                             double previousZeroOffset,
+                             bool applyToMotor)
 {
     std::lock_guard<std::mutex> lock(jointStateMutex_);
     std::size_t matchCount = 0;
@@ -1248,9 +1264,14 @@ bool CanDriverHW::commitZero(uint16_t motorId,
         if (static_cast<uint16_t>(joint.motorId) != motorId) {
             continue;
         }
-        jointZeroOffsetRadByMotorId_[motorId] = zeroOffset;
+        const double storedZeroOffset = applyToMotor ? 0.0 : zeroOffset;
+        const double rollbackZeroOffset = applyToMotor ? 0.0 : previousZeroOffset;
+        jointZeroOffsetRadByMotorId_[motorId] = storedZeroOffset;
+        const double previousJointZeroOffset = joint.zeroOffsetRad;
+        joint.zeroOffsetRad = storedZeroOffset;
         if (ppLocalZeroOffsetPersistenceEnabled_ && !savePersistedLocalZeroOffsets()) {
-            jointZeroOffsetRadByMotorId_[motorId] = previousZeroOffset;
+            jointZeroOffsetRadByMotorId_[motorId] = rollbackZeroOffset;
+            joint.zeroOffsetRad = previousJointZeroOffset;
             return false;
         }
         return true;
@@ -1261,7 +1282,8 @@ bool CanDriverHW::commitZero(uint16_t motorId,
 bool CanDriverHW::commitLimits(uint16_t motorId,
                                double baseMin,
                                double baseMax,
-                               double zeroOffset)
+                               double zeroOffset,
+                               bool applyToMotor)
 {
     std::lock_guard<std::mutex> lock(jointStateMutex_);
     std::size_t matchCount = 0;
@@ -1287,7 +1309,9 @@ bool CanDriverHW::commitLimits(uint16_t motorId,
         joint.limits.has_position_limits = true;
         joint.limits.min_position = baseMin;
         joint.limits.max_position = baseMax;
-        jointZeroOffsetRadByMotorId_[motorId] = zeroOffset;
+        const double storedZeroOffset = applyToMotor ? 0.0 : zeroOffset;
+        jointZeroOffsetRadByMotorId_[motorId] = storedZeroOffset;
+        joint.zeroOffsetRad = storedZeroOffset;
         return true;
     }
     return false;

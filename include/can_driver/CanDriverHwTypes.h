@@ -37,6 +37,7 @@ struct CanDriverJointConfig {
     double positionScale{1.0};
     double velocityScale{1.0};
     double directionSign{1.0};
+    double zeroOffsetRad{0.0};
     double ipMaxVelocity{1.0};
     double ipMaxAcceleration{2.0};
     double ipMaxJerk{10.0};

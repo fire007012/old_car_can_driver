@@ -108,6 +108,7 @@ can_driver_node:
       position_scale: 1.7453292519943296e-04
       velocity_scale: 1.7453292519943296e-04
       direction_sign: 1.0
+      zero_offset_rad: 42.067496
 
     # # --- 机械臂关节（PP 协议，CSP 模式）---
     # # 使用 PP 协议（EyouCan），CSP 周期同步位置模式

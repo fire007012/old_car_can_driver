@@ -137,6 +137,17 @@ inline double effectiveVelocityScale(const CanDriverJointConfig &joint)
     return joint.velocityScale * joint.directionSign;
 }
 
+inline double rawPositionToJointPosition(const CanDriverJointConfig &joint, double rawPosition)
+{
+    return rawPosition * effectivePositionScale(joint) + joint.zeroOffsetRad;
+}
+
+inline double jointPositionToRawPositionCommand(const CanDriverJointConfig &joint,
+                                               double jointPosition)
+{
+    return jointPosition - joint.zeroOffsetRad;
+}
+
 inline double controlModeScale(const CanDriverJointConfig &joint, AxisControlMode mode)
 {
     return controlModeUsesVelocitySemantics(mode) ? effectiveVelocityScale(joint)

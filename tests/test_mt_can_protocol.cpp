@@ -348,11 +348,12 @@ TEST_F(MtCanTest, HandleResponseIgnoresExtendedFrame)
     EXPECT_EQ(mt.getVelocity(kResponseNodeId), 0);
 }
 
-TEST_F(MtCanTest, GetPositionPreservesLargeMultiTurnAngle)
+TEST_F(MtCanTest, GetPositionParsesProtocolMultiTurnAngleDataBytes)
 {
     constexpr MotorID kResponseNodeId = static_cast<MotorID>(0x01);
 
-    // 0x0000_8000_0000 (48-bit LE) = 2,147,483,648，超过 int32 上界。
+    // 0x92 多圈角度按协议从 DATA[4..7] 读取，单位 0.01 deg/LSB。
+    // 协议示例 0x00008CA0 = 36000 -> 360 deg。
     CanTransport::Frame frame {};
     frame.id = 0x241;
     frame.dlc = 8;
@@ -362,14 +363,24 @@ TEST_F(MtCanTest, GetPositionPreservesLargeMultiTurnAngle)
     frame.data[1] = 0x00;
     frame.data[2] = 0x00;
     frame.data[3] = 0x00;
-    frame.data[4] = 0x00;
-    frame.data[5] = 0x80;
+    frame.data[4] = 0xA0;
+    frame.data[5] = 0x8C;
     frame.data[6] = 0x00;
     frame.data[7] = 0x00;
 
     transport->simulateReceive(frame);
 
-    EXPECT_EQ(mt.getPosition(kResponseNodeId), 2147483648LL);
+    EXPECT_EQ(mt.getPosition(kResponseNodeId), 36000LL);
+
+    // 负值也应按 int32 符号扩展。
+    frame.data[4] = 0x60;
+    frame.data[5] = 0x79;
+    frame.data[6] = 0xFF;
+    frame.data[7] = 0xFF;
+
+    transport->simulateReceive(frame);
+
+    EXPECT_EQ(mt.getPosition(kResponseNodeId), -34464LL);
 }
 
 TEST_F(MtCanTest, GetPositionWithoutCacheReturnsZeroWithoutSendingReadRequest)

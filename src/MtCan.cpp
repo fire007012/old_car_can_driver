@@ -45,21 +45,16 @@ uint16_t readUInt16LE(const CanTransport::Frame &frame, std::size_t index)
                                  (static_cast<uint16_t>(frame.data[index + 1]) << 8));
 }
 
-// 读取 48 位小端有符号整数（用于多圈角度 0x92 应答，DATA[2]~DATA[7]）
-int64_t readInt48LE(const CanTransport::Frame &frame, std::size_t index)
+int32_t readInt32LE(const CanTransport::Frame &frame, std::size_t index)
 {
-    if (index + 5 >= frame.dlc) {
+    if (index + 3 >= frame.dlc) {
         return 0;
     }
-    int64_t v = 0;
-    for (int i = 5; i >= 0; --i) {
-        v = (v << 8) | frame.data[index + static_cast<std::size_t>(i)];
-    }
-    // 48 位符号扩展
-    if (v & (int64_t{1} << 47)) {
-        v -= (int64_t{1} << 48);
-    }
-    return v;
+    const uint32_t value = static_cast<uint32_t>(frame.data[index]) |
+                           (static_cast<uint32_t>(frame.data[index + 1]) << 8) |
+                           (static_cast<uint32_t>(frame.data[index + 2]) << 16) |
+                           (static_cast<uint32_t>(frame.data[index + 3]) << 24);
+    return static_cast<int32_t>(value);
 }
 
 } // namespace
@@ -1033,9 +1028,9 @@ void MtCan::handleResponse(const CanTransport::Frame &frame)
 
         // ── 多圈角度应答 (0x92) ────────────────
         case 0x92: {
-            // DATA[1] = NULL, DATA[2~7] = int48_t LE, 单位 0.01°/LSB
+            // DATA[4~7] = int32_t LE, 单位 0.01°/LSB
             if (frame.dlc >= 8) {
-                state.multiTurnAngle = readInt48LE(frame, 2);
+                state.multiTurnAngle = readInt32LE(frame, 4);
                 state.positionReceived = true;
             }
             break;

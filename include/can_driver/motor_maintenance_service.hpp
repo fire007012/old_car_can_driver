@@ -41,11 +41,11 @@ public:
     using ModeSwitchCommitter =
         std::function<bool(uint16_t, can_driver::AxisControlMode)>;
     using ZeroCommitter =
-        std::function<bool(uint16_t, double, double)>;
+        std::function<bool(uint16_t, double, double, bool)>;
     using ZeroOffsetGetter =
         std::function<bool(uint16_t, double*)>;
     using LimitCommitter =
-        std::function<bool(uint16_t, double, double, double)>;
+        std::function<bool(uint16_t, double, double, double, bool)>;
     using DisabledRequirementChecker =
         std::function<bool(const JointConfig &, const char *, std::string *)>;
     using ProtocolGetter =

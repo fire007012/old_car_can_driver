@@ -122,11 +122,13 @@ public:
     bool getZeroOffset(uint16_t motorId, double* zeroOffset) const;
     bool commitZero(uint16_t motorId,
                     double zeroOffset,
-                    double previousZeroOffset);
+                    double previousZeroOffset,
+                    bool applyToMotor);
     bool commitLimits(uint16_t motorId,
                       double baseMin,
                       double baseMax,
-                      double zeroOffset);
+                      double zeroOffset,
+                      bool applyToMotor);
     void publishMotorStates(ros::Publisher &publisher);
     void publishLifecycleState(ros::Publisher &publisher);
     double motorStatePeriodSec() const

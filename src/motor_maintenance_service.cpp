@@ -418,8 +418,8 @@ bool MotorMaintenanceService::resolveCurrentReportedPosition(
         }
     }
 
-    *currentPositionRad =
-        static_cast<double>(rawPos) * can_driver::effectivePositionScale(target);
+    *currentPositionRad = can_driver::rawPositionToJointPosition(target,
+                                                                 static_cast<double>(rawPos));
     return true;
 }
 
@@ -623,7 +623,7 @@ bool MotorMaintenanceService::SetZeroByMotorId(uint16_t motorId,
         }
     }
 
-    if (!commitZero_ || !commitZero_(motorId, resolvedZeroOffset, previousZeroOffset)) {
+    if (!commitZero_ || !commitZero_(motorId, resolvedZeroOffset, previousZeroOffset, applyToMotor)) {
         if (message != nullptr) {
             *message = "Failed to update local zero state.";
         }
@@ -802,7 +802,7 @@ bool MotorMaintenanceService::ApplyLimitsByMotorId(uint16_t motorId,
     }
 
     if (!commitLimits_ ||
-        !commitLimits_(motorId, resolvedMin, resolvedMax, activeZeroOffset)) {
+        !commitLimits_(motorId, resolvedMin, resolvedMax, activeZeroOffset, applyToMotor)) {
         if (message != nullptr) {
             *message = "Failed to update local limit state.";
         }

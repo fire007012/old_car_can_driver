@@ -940,6 +940,45 @@ TEST(LifecycleDriverOpsTest, MotionHealthyAcceptsFreshPpAxisBeforeFirstMotionCom
     EXPECT_TRUE(detail.empty());
 }
 
+TEST(LifecycleDriverOpsTest, MotionHealthyAcceptsPpDesiredModeWhenModeFeedbackPending)
+{
+    auto deviceManager = std::make_shared<FakeDeviceManager>();
+    MotorActionExecutor executor(deviceManager);
+    can_driver::LifecycleDriverOps ops(deviceManager, &executor);
+    ops.setTargets({
+        MotorActionExecutor::Target{"joint_c", "fake1", CanType::PP, static_cast<MotorID>(0x201)},
+    });
+
+    const auto key = can_driver::MakeAxisKey("fake1", CanType::PP, static_cast<MotorID>(0x201));
+    deviceManager->sharedState()->mutateDeviceHealth(
+        "fake1",
+        [](can_driver::SharedDriverState::DeviceHealthState *health) {
+            health->transportReady = true;
+        });
+    deviceManager->sharedState()->mutateAxisFeedback(
+        key,
+        [](can_driver::SharedDriverState::AxisFeedbackState *feedback) {
+            feedback->feedbackSeen = true;
+            feedback->enabled = true;
+            feedback->enabledValid = true;
+            feedback->faultValid = true;
+            feedback->modeValid = false;
+            feedback->lastRxSteadyNs = can_driver::SharedDriverSteadyNowNs();
+        });
+    deviceManager->sharedState()->mutateAxisCommand(
+        key,
+        [](can_driver::SharedDriverState::AxisCommandState *command) {
+            command->valid = false;
+            command->desiredMode = CanProtocol::MotorMode::CSP;
+            command->desiredModeValid = true;
+        });
+    deviceManager->sharedState()->setAxisIntent(key, can_driver::AxisIntent::Enable);
+
+    std::string detail;
+    EXPECT_TRUE(ops.motionHealthy(&detail));
+    EXPECT_TRUE(detail.empty());
+}
+
 TEST(LifecycleDriverOpsTest, RecoverAllWaitsForAxisReadinessRecoveryConfirmation)
 {
     auto deviceManager = std::make_shared<FakeDeviceManager>();

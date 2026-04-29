@@ -260,6 +260,10 @@ bool parse(const XmlRpc::XmlRpcValue &jointList,
         if (!parseDirectionSign(jv, jc.name, &jc.directionSign, errorMsg)) {
             return false;
         }
+        if (!parseFiniteOptionalDouble(jv, "zero_offset_rad", jc.name,
+                                       &jc.zeroOffsetRad, errorMsg)) {
+            return false;
+        }
         if (!parsePositiveOptionalDouble(jv, "ip_max_velocity", jc.name,
                                          &jc.ipMaxVelocity, errorMsg)) {
             return false;

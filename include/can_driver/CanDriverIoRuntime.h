@@ -69,8 +69,9 @@ public:
             for (const std::size_t index : group.jointIndices) {
                 const auto &joint = (*joints)[index];
                 snapshots[index].pos =
-                    static_cast<double>(proto->getPosition(joint.motorId)) *
-                    can_driver::effectivePositionScale(joint);
+                    can_driver::rawPositionToJointPosition(
+                        joint,
+                        static_cast<double>(proto->getPosition(joint.motorId)));
                 snapshots[index].vel =
                     static_cast<double>(proto->getVelocity(joint.motorId)) *
                     can_driver::effectiveVelocityScale(joint);
@@ -184,10 +185,14 @@ public:
                 cmdValue = clampWithJointLimits(joint, cmdValue);
             }
 
+            double rawCmdValue = cmdValue;
+            if (can_driver::controlModeUsesPositionSemantics(mode)) {
+                rawCmdValue = can_driver::jointPositionToRawPositionCommand(joint, cmdValue);
+            }
             const double scale = can_driver::controlModeScale(joint, mode);
             (*commandValidBuffer)[index] = static_cast<uint8_t>(
                 can_driver::safe_command::scaleAndClampToInt32(
-                    cmdValue, scale, joint.name, (*rawCommandBuffer)[index]));
+                    rawCmdValue, scale, joint.name, (*rawCommandBuffer)[index]));
             prepared.valid = ((*commandValidBuffer)[index] != 0);
         }
     }
