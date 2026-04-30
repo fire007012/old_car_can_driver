@@ -157,6 +157,17 @@ void DeviceManager::setRefreshInterFrameGapUs(uint32_t gapUs)
     }
 }
 
+void DeviceManager::setControlInterFrameGapUs(uint32_t gapUs)
+{
+    std::unique_lock<std::shared_mutex> lock(mutex_);
+    controlInterFrameGap_ = std::chrono::microseconds(gapUs);
+    for (auto &entry : txDispatchers_) {
+        if (const auto runtime = std::dynamic_pointer_cast<DeviceRuntime>(entry.second)) {
+            runtime->setControlInterFrameGapUs(gapUs);
+        }
+    }
+}
+
 bool DeviceManager::isUdpDevice(const std::string &device) const
 {
     return device.rfind(kUdpPrefix, 0) == 0;
@@ -692,7 +703,9 @@ bool DeviceManager::ensureTransport(const std::string &device, bool loopback)
     }
 
     auto transport = getTransportBaseLocked(device);
-    txDispatchers_[device] = std::make_shared<DeviceRuntime>(transport, device);
+    DeviceRuntime::Options runtimeOptions;
+    runtimeOptions.controlInterFrameGapUs = controlInterFrameGap_;
+    txDispatchers_[device] = std::make_shared<DeviceRuntime>(transport, device, runtimeOptions);
     std::static_pointer_cast<DeviceRuntime>(txDispatchers_[device])->setSharedDriverState(sharedState_);
     if (sharedState_) {
         const auto socketIt = transports_.find(device);
@@ -740,7 +753,9 @@ bool DeviceManager::ensureProtocol(const std::string &device, CanType type)
 
     auto txDispatcherIt = txDispatchers_.find(device);
     if (txDispatcherIt == txDispatchers_.end()) {
-        txDispatchers_[device] = std::make_shared<DeviceRuntime>(transport, device);
+        DeviceRuntime::Options runtimeOptions;
+        runtimeOptions.controlInterFrameGapUs = controlInterFrameGap_;
+        txDispatchers_[device] = std::make_shared<DeviceRuntime>(transport, device, runtimeOptions);
         txDispatcherIt = txDispatchers_.find(device);
     }
     auto txDispatcher = txDispatcherIt->second;
@@ -837,7 +852,9 @@ bool DeviceManager::initDevice(const std::string &device,
     if (deviceCmdMutexes_.find(device) == deviceCmdMutexes_.end()) {
         deviceCmdMutexes_[device] = std::make_shared<std::mutex>();
     }
-    txDispatchers_[device] = std::make_shared<DeviceRuntime>(transport, device);
+    DeviceRuntime::Options runtimeOptions;
+    runtimeOptions.controlInterFrameGapUs = controlInterFrameGap_;
+    txDispatchers_[device] = std::make_shared<DeviceRuntime>(transport, device, runtimeOptions);
     std::static_pointer_cast<DeviceRuntime>(txDispatchers_[device])->setSharedDriverState(sharedState_);
     if (sharedState_) {
         for (const auto &entry : motors) {

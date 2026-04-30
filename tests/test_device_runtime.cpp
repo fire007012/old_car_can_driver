@@ -5,6 +5,7 @@
 #include "can_driver/SharedDriverState.h"
 
 #include <chrono>
+#include <condition_variable>
 #include <deque>
 #include <mutex>
 #include <set>
@@ -17,7 +18,14 @@ class MockTransport : public CanTransport {
 public:
     SendResult send(const Frame &frame) override
     {
-        std::lock_guard<std::mutex> lock(mutex_);
+        std::unique_lock<std::mutex> lock(mutex_);
+        if (blockNextSend_) {
+            blockNextSend_ = false;
+            sendBlocked_ = true;
+            cv_.notify_all();
+            cv_.wait(lock, [this]() { return releaseBlockedSend_; });
+            releaseBlockedSend_ = false;
+        }
         auto result = nextResult_;
         if (!queuedResults_.empty()) {
             result = queuedResults_.front();
@@ -25,6 +33,7 @@ public:
         }
         if (result == SendResult::Ok) {
             sentFrames_.push_back(frame);
+            sentTimes_.push_back(std::chrono::steady_clock::now());
         }
         senderThreads_.insert(std::this_thread::get_id());
         ++sendCallCount_;
@@ -50,6 +59,12 @@ public:
         return sentFrames_;
     }
 
+    std::vector<std::chrono::steady_clock::time_point> snapshotSendTimes() const
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        return sentTimes_;
+    }
+
     std::size_t senderThreadCount() const
     {
         std::lock_guard<std::mutex> lock(mutex_);
@@ -60,6 +75,29 @@ public:
     {
         std::lock_guard<std::mutex> lock(mutex_);
         return sendCallCount_;
+    }
+
+    void blockNextSend()
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        blockNextSend_ = true;
+        sendBlocked_ = false;
+        releaseBlockedSend_ = false;
+    }
+
+    bool waitUntilSendBlockedFor(std::chrono::milliseconds timeout)
+    {
+        std::unique_lock<std::mutex> lock(mutex_);
+        return cv_.wait_for(lock, timeout, [this]() { return sendBlocked_; });
+    }
+
+    void releaseBlockedSend()
+    {
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            releaseBlockedSend_ = true;
+        }
+        cv_.notify_all();
     }
 
     void setNextResult(SendResult result)
@@ -76,12 +114,17 @@ public:
 
 private:
     mutable std::mutex mutex_;
+    std::condition_variable cv_;
     std::vector<Frame> sentFrames_;
+    std::vector<std::chrono::steady_clock::time_point> sentTimes_;
     std::set<std::thread::id> senderThreads_;
     std::size_t sendCallCount_{0};
     SendResult nextResult_{SendResult::Ok};
     std::deque<SendResult> queuedResults_;
     ReceiveHandler receiveHandler_;
+    bool blockNextSend_{false};
+    bool sendBlocked_{false};
+    bool releaseBlockedSend_{false};
 };
 
 CanTransport::Frame makeFrame(std::uint32_t id)
@@ -232,6 +275,79 @@ TEST_F(DeviceRuntimeTest, ControlQueueReplacesOlderFrameForSameCanId)
     const auto stats = runtime.snapshotStats();
     EXPECT_EQ(stats.evictedControl, 1u);
     EXPECT_EQ(stats.droppedControl, 0u);
+}
+
+TEST_F(DeviceRuntimeTest, DrainsReadyControlBurstBeforeLowerPriorityFrames)
+{
+    auto transport = std::make_shared<MockTransport>();
+    DeviceRuntime::Options options;
+    options.autostart = false;
+    DeviceRuntime runtime(transport, "test_can0", options);
+
+    runtime.submit({makeFrame(0x150), CanTxDispatcher::Category::Query, "state_query"});
+    runtime.submit({makeFrame(0x141), CanTxDispatcher::Category::Control, "left_wheel"});
+    runtime.submit({makeFrame(0x142), CanTxDispatcher::Category::Control, "right_wheel"});
+
+    runtime.start();
+    ASSERT_TRUE(runtime.waitUntilIdleFor(std::chrono::milliseconds(200)));
+
+    const auto frames = transport->snapshotFrames();
+    ASSERT_EQ(frames.size(), 3u);
+    EXPECT_EQ(frames[0].id, 0x141u);
+    EXPECT_EQ(frames[1].id, 0x142u);
+    EXPECT_EQ(frames[2].id, 0x150u);
+}
+
+TEST_F(DeviceRuntimeTest, AppliesGapBetweenConsecutiveControlFrames)
+{
+    auto transport = std::make_shared<MockTransport>();
+    DeviceRuntime::Options options;
+    options.autostart = false;
+    options.controlInterFrameGapUs = std::chrono::microseconds(3000);
+    DeviceRuntime runtime(transport, "test_can0", options);
+
+    runtime.submit({makeFrame(0x141), CanTxDispatcher::Category::Control, "left_wheel"});
+    runtime.submit({makeFrame(0x142), CanTxDispatcher::Category::Control, "right_wheel"});
+
+    runtime.start();
+    ASSERT_TRUE(runtime.waitUntilIdleFor(std::chrono::milliseconds(300)));
+
+    const auto frames = transport->snapshotFrames();
+    ASSERT_EQ(frames.size(), 2u);
+    EXPECT_EQ(frames[0].id, 0x141u);
+    EXPECT_EQ(frames[1].id, 0x142u);
+
+    const auto sendTimes = transport->snapshotSendTimes();
+    ASSERT_EQ(sendTimes.size(), 2u);
+    const auto gapUs = std::chrono::duration_cast<std::chrono::microseconds>(
+        sendTimes[1] - sendTimes[0]);
+    EXPECT_GE(gapUs.count(), 2500);
+}
+
+TEST_F(DeviceRuntimeTest, CoalescesTrailingControlFrameBeforeQueuedQuery)
+{
+    auto transport = std::make_shared<MockTransport>();
+    DeviceRuntime::Options options;
+    options.autostart = false;
+    options.controlBurstCoalesceUs = std::chrono::microseconds(5000);
+    DeviceRuntime runtime(transport, "test_can0", options);
+
+    transport->blockNextSend();
+    runtime.start();
+    runtime.submit({makeFrame(0x141), CanTxDispatcher::Category::Control, "left_wheel"});
+    ASSERT_TRUE(transport->waitUntilSendBlockedFor(std::chrono::milliseconds(200)));
+
+    runtime.submit({makeFrame(0x150), CanTxDispatcher::Category::Query, "state_query"});
+    transport->releaseBlockedSend();
+    runtime.submit({makeFrame(0x142), CanTxDispatcher::Category::Control, "right_wheel"});
+
+    ASSERT_TRUE(runtime.waitUntilIdleFor(std::chrono::milliseconds(200)));
+
+    const auto frames = transport->snapshotFrames();
+    ASSERT_EQ(frames.size(), 3u);
+    EXPECT_EQ(frames[0].id, 0x141u);
+    EXPECT_EQ(frames[1].id, 0x142u);
+    EXPECT_EQ(frames[2].id, 0x150u);
 }
 
 TEST_F(DeviceRuntimeTest, BackpressureCountedInStats)

@@ -54,6 +54,8 @@ public:
     void setDeviceRefreshRateHz(const std::string &device, double hz) override;
     /// 设置查询帧之间的最小发送间隔（微秒）。
     void setRefreshInterFrameGapUs(uint32_t gapUs) override;
+    /// 设置连续控制帧之间的最小发送间隔（微秒）。
+    void setControlInterFrameGapUs(uint32_t gapUs) override;
     /// 设置 MT 协议在注册电机后下发的通讯中断保护时间（ms）。
     void setMtCommunicationTimeoutOnInitMs(uint32_t timeoutMs) override;
     /// 设置 PP 协议是否使用快写命令（CMD=0x05）。
@@ -155,6 +157,7 @@ private:
         std::make_shared<can_driver::SharedDriverState>()};
     bool ppFastWriteEnabled_{false};
     std::chrono::microseconds refreshInterFrameGap_{std::chrono::microseconds(1000)};
+    std::chrono::microseconds controlInterFrameGap_{std::chrono::microseconds(0)};
     uint32_t mtCommunicationTimeoutOnInitMs_{0};
     int32_t ppPositionDefaultVelocityRaw_{EyouCan::kDefaultPositionVelocityRaw};
     int32_t ppCspDefaultVelocityRaw_{EyouCan::kDefaultPositionVelocityRaw};

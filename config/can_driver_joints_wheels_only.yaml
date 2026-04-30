@@ -7,7 +7,9 @@ can_driver_node:
   motor_query_hz: 2.0
   startup_probe_query_hz: 2.0
   refresh_inter_frame_gap_sec: 0.005
+  control_inter_frame_gap_sec: 0.005
   safety_feedback_freshness_timeout_sec: 3.0
+  control_frequency: 10.0
 
   joints:
     - name: left_front_wheel_joint

@@ -31,6 +31,7 @@ public:
     virtual void setRefreshRateHz(double hz) = 0;
     virtual void setDeviceRefreshRateHz(const std::string &device, double hz) = 0;
     virtual void setRefreshInterFrameGapUs(uint32_t gapUs) = 0;
+    virtual void setControlInterFrameGapUs(uint32_t gapUs) = 0;
     virtual void setMtCommunicationTimeoutOnInitMs(uint32_t timeoutMs) = 0;
     virtual void setPpFastWriteEnabled(bool enabled) = 0;
     virtual void setPpDefaultPositionVelocityRaw(int32_t velocityRaw) = 0;

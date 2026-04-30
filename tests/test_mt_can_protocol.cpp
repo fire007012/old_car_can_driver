@@ -2,6 +2,7 @@
 #include <ros/time.h>
 
 #include "can_driver/MtCan.h"
+#include "can_driver/MtRmdProtocol.h"
 #include "can_driver/SharedDriverState.h"
 
 #include <array>
@@ -160,6 +161,84 @@ TEST_F(MtCanTest, SetVelocityEncodesExpectedFrame)
     EXPECT_EQ(frame.data[7], static_cast<uint8_t>((kVelocity >> 24) & 0xFF));
 }
 
+TEST(MtRmdProtocolTest, SpeedClosedLoopFrameMatchesSdkLayout)
+{
+    const auto frame = can_driver::mt_rmd::makeSpeedClosedLoopFrame(0x141, -123456);
+
+    EXPECT_EQ(frame.id, 0x141u);
+    EXPECT_EQ(frame.dlc, 8u);
+    EXPECT_FALSE(frame.isExtended);
+    EXPECT_FALSE(frame.isRemoteRequest);
+    EXPECT_EQ(frame.data[0], 0xA2u);
+    EXPECT_EQ(frame.data[4], 0xC0u);
+    EXPECT_EQ(frame.data[5], 0x1Du);
+    EXPECT_EQ(frame.data[6], 0xFEu);
+    EXPECT_EQ(frame.data[7], 0xFFu);
+}
+
+TEST(MtRmdProtocolTest, AbsolutePositionFrameMatchesSdkLayout)
+{
+    const auto frame = can_driver::mt_rmd::makeAbsolutePositionFrame(0x142, 36000, 120);
+
+    EXPECT_EQ(frame.id, 0x142u);
+    EXPECT_EQ(frame.data[0], 0xA4u);
+    EXPECT_EQ(frame.data[2], 120u);
+    EXPECT_EQ(frame.data[3], 0u);
+    EXPECT_EQ(frame.data[4], 0xA0u);
+    EXPECT_EQ(frame.data[5], 0x8Cu);
+    EXPECT_EQ(frame.data[6], 0x00u);
+    EXPECT_EQ(frame.data[7], 0x00u);
+}
+
+TEST(MtRmdProtocolTest, ConfigFramesMatchSdkLayoutAndClampRules)
+{
+    const auto accelFrame = can_driver::mt_rmd::makeAccelerationFrame(
+        0x141,
+        can_driver::mt_rmd::AccelerationType::VelocityPlanningAcceleration,
+        42);
+    EXPECT_EQ(accelFrame.data[0], 0x43u);
+    EXPECT_EQ(accelFrame.data[1], 0x02u);
+    EXPECT_EQ(accelFrame.data[4], 100u);
+    EXPECT_EQ(accelFrame.data[5], 0u);
+
+    const auto timeoutFrame = can_driver::mt_rmd::makeCommunicationTimeoutFrame(
+        0x141, std::chrono::milliseconds(1500));
+    EXPECT_EQ(timeoutFrame.data[0], 0xB3u);
+    EXPECT_EQ(timeoutFrame.data[4], 0xDCu);
+    EXPECT_EQ(timeoutFrame.data[5], 0x05u);
+    EXPECT_EQ(can_driver::mt_rmd::parseCommunicationTimeoutMs(timeoutFrame), 1500u);
+}
+
+TEST(MtRmdProtocolTest, FeedbackAndPositionParsingMatchSdkUnits)
+{
+    CanTransport::Frame feedback {};
+    feedback.id = 0x241;
+    feedback.dlc = 8;
+    feedback.data[0] = 0x9C;
+    feedback.data[1] = 36;
+    feedback.data[2] = 0x85;
+    feedback.data[3] = 0xFF;
+    feedback.data[4] = 0x58;
+    feedback.data[5] = 0x02;
+    feedback.data[6] = 0x34;
+    feedback.data[7] = 0x12;
+
+    const auto status = can_driver::mt_rmd::parseFeedbackStatus(feedback);
+    EXPECT_EQ(status.temperature, 36);
+    EXPECT_NEAR(status.currentAmp, -1.23, 1e-9);
+    EXPECT_EQ(status.shaftSpeedDps, 600);
+    EXPECT_EQ(status.shaftAngleRaw, 0x1234u);
+
+    CanTransport::Frame angle {};
+    angle.dlc = 8;
+    angle.data[0] = 0x92;
+    angle.data[4] = 0x60;
+    angle.data[5] = 0x79;
+    angle.data[6] = 0xFF;
+    angle.data[7] = 0xFF;
+    EXPECT_EQ(can_driver::mt_rmd::parseMultiTurnAngleCentideg(angle), -34464);
+}
+
 TEST_F(MtCanTest, SetPositionEncodesExpectedFrame)
 {
     constexpr MotorID kMotorId = static_cast<MotorID>(0x02);
@@ -217,7 +296,7 @@ TEST_F(MtCanTest, WritesRouteThroughUnifiedTxDispatcher)
     ASSERT_TRUE(mt.setVelocity(static_cast<MotorID>(0x01), 123));
     ASSERT_EQ(txDispatcher->requests.size(), 1u);
     EXPECT_EQ(txDispatcher->requests[0].category, CanTxDispatcher::Category::Control);
-    EXPECT_STREQ(txDispatcher->requests[0].source, "MtCan::sendFrame");
+    EXPECT_STREQ(txDispatcher->requests[0].source, "MtCan::setVelocity");
 }
 
 TEST_F(MtCanTest, CommandsPopulateSharedStateIntentAndTargets)
@@ -275,6 +354,36 @@ TEST_F(MtCanTest, IssueRefreshQueryMapsEnumsToExpectedCommands)
     EXPECT_EQ(transport->sentFrames[0].data[0], 0x9Cu);
     EXPECT_EQ(transport->sentFrames[1].data[0], 0x92u);
     EXPECT_EQ(transport->sentFrames[2].data[0], 0x9Au);
+}
+
+TEST_F(MtCanTest, FaultStateLookupUsesMtSystemIdAlias)
+{
+    constexpr MotorID kLeftFront = static_cast<MotorID>(0x141);
+    constexpr MotorID kRightFront = static_cast<MotorID>(0x142);
+
+    CanTransport::Frame leftFault {};
+    leftFault.id = 0x241;
+    leftFault.dlc = 8;
+    leftFault.isExtended = false;
+    leftFault.isRemoteRequest = false;
+    leftFault.data[0] = 0x9A;
+    leftFault.data[6] = 0x01;
+    leftFault.data[7] = 0x00;
+
+    CanTransport::Frame rightHealthy {};
+    rightHealthy.id = 0x242;
+    rightHealthy.dlc = 8;
+    rightHealthy.isExtended = false;
+    rightHealthy.isRemoteRequest = false;
+    rightHealthy.data[0] = 0x9A;
+    rightHealthy.data[6] = 0x00;
+    rightHealthy.data[7] = 0x00;
+
+    transport->simulateReceive(leftFault);
+    transport->simulateReceive(rightHealthy);
+
+    EXPECT_TRUE(mt.hasFault(kLeftFront));
+    EXPECT_FALSE(mt.hasFault(kRightFront));
 }
 
 TEST_F(MtCanTest, HandleResponseParsesStateFrame)

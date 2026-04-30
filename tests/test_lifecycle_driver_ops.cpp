@@ -177,6 +177,7 @@ public:
     void setRefreshRateHz(double) override {}
     void setDeviceRefreshRateHz(const std::string &, double) override {}
     void setRefreshInterFrameGapUs(uint32_t) override {}
+    void setControlInterFrameGapUs(uint32_t) override {}
     void setMtCommunicationTimeoutOnInitMs(uint32_t) override {}
     void setPpFastWriteEnabled(bool) override {}
     void setPpDefaultPositionVelocityRaw(int32_t) override {}

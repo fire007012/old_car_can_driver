@@ -26,6 +26,8 @@ public:
         std::size_t maxBackpressureRetries{3};
         /// How long to sleep after maxBackpressureRetries consecutive EAGAIN.
         std::chrono::microseconds backpressureSleepUs{500};
+        std::chrono::microseconds controlBurstCoalesceUs{500};
+        std::chrono::microseconds controlInterFrameGapUs{0};
 
         bool autostart{true};
     };
@@ -63,6 +65,7 @@ public:
     bool waitUntilIdleFor(std::chrono::milliseconds timeout);
     Stats snapshotStats() const;
     void setSharedDriverState(std::shared_ptr<can_driver::SharedDriverState> sharedState);
+    void setControlInterFrameGapUs(std::uint32_t gapUs);
 
 private:
     using Queue = std::deque<Request>;
@@ -82,7 +85,7 @@ private:
     std::shared_ptr<CanTransport> transport_;
     std::shared_ptr<can_driver::SharedDriverState> sharedState_;
     const std::string deviceName_;
-    const Options options_;
+    Options options_;
 
     mutable std::mutex mutex_;
     std::condition_variable cv_;

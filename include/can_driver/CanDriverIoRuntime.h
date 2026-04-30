@@ -106,6 +106,22 @@ public:
 
         std::lock_guard<std::mutex> lock(*jointStateMutex);
         const ros::Time now = ros::Time::now();
+        bool activeDirectCommandPresent = false;
+        if (!config.debugBypassRosControl) {
+            for (auto &joint : *joints) {
+                const auto mode = can_driver::axisControlModeFromString(joint.controlMode);
+                if (!can_driver::controlModeHasDirectCommand(joint, mode)) {
+                    continue;
+                }
+                const double age =
+                    (now - can_driver::controlModeLastDirectCommandTime(joint, mode)).toSec();
+                if (age <= config.directCmdTimeoutSec) {
+                    activeDirectCommandPresent = true;
+                    break;
+                }
+                can_driver::clearDirectCommandForControlMode(&joint, mode);
+            }
+        }
         for (std::size_t index = 0; index < joints->size(); ++index) {
             auto &joint = (*joints)[index];
             const auto mode = can_driver::axisControlModeFromString(joint.controlMode);
@@ -135,7 +151,7 @@ public:
                 }
             }
             if (!useDirect) {
-                if (config.debugBypassRosControl) {
+                if (config.debugBypassRosControl || activeDirectCommandPresent) {
                     hasCommand = false;
                 } else {
                     cmdValue = can_driver::controlModeFallbackCommandValue(joint, mode);

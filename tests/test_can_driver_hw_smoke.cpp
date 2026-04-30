@@ -520,6 +520,7 @@ public:
         deviceRefreshRateHzCalls_.emplace_back(device, hz);
     }
     void setRefreshInterFrameGapUs(uint32_t) override {}
+    void setControlInterFrameGapUs(uint32_t) override {}
     void setMtCommunicationTimeoutOnInitMs(uint32_t timeoutMs) override
     {
         std::lock_guard<std::mutex> lock(lifecycleMutex_);
@@ -741,6 +742,32 @@ protected:
         return joints;
     }
 
+    static XmlRpc::XmlRpcValue makeFrontWheelVelocityJoints()
+    {
+        XmlRpc::XmlRpcValue joints;
+        joints.setSize(2);
+
+        joints[0]["name"] = "left_front_wheel_joint";
+        joints[0]["motor_id"] = static_cast<int>(0x141);
+        joints[0]["protocol"] = "MT";
+        joints[0]["can_device"] = "fake0";
+        joints[0]["control_mode"] = "velocity";
+        joints[0]["velocity_scale"] = 0.1;
+        joints[0]["position_scale"] = 1.0;
+        joints[0]["direction_sign"] = 1.0;
+
+        joints[1]["name"] = "right_front_wheel_joint";
+        joints[1]["motor_id"] = static_cast<int>(0x142);
+        joints[1]["protocol"] = "MT";
+        joints[1]["can_device"] = "fake0";
+        joints[1]["control_mode"] = "velocity";
+        joints[1]["velocity_scale"] = 0.1;
+        joints[1]["position_scale"] = 1.0;
+        joints[1]["direction_sign"] = -1.0;
+
+        return joints;
+    }
+
     static XmlRpc::XmlRpcValue makeSingleCspJoint(double directionSign = 1.0)
     {
         XmlRpc::XmlRpcValue joints;
@@ -907,6 +934,28 @@ TEST_F(CanDriverHWSmokeTest, InitAndDirectWriteUsesProtocol)
     EXPECT_EQ(fakeDm->protocol()->lastVelocity(), 12);
 
     spinner.stop();
+}
+
+TEST_F(CanDriverHWSmokeTest, DirectVelocityDoesNotZeroOtherWheel)
+{
+    auto fakeDm = std::make_shared<FakeDeviceManager>();
+    CanDriverHW hw(fakeDm);
+
+    ros::NodeHandle nh;
+    ros::NodeHandle pnh(uniqueNs("can_driver_hw_smoke_direct_single_wheel"));
+
+    pnh.setParam("joints", makeFrontWheelVelocityJoints());
+    pnh.setParam("motor_state_period_sec", 0.2);
+
+    ASSERT_TRUE(hw.init(nh, pnh));
+    enterRunning(hw);
+
+    hw.acceptDirectCommand(0, true, 1.2, ros::Time::now());
+    hw.write(ros::Time::now(), ros::Duration(0.01));
+
+    EXPECT_EQ(fakeDm->protocol()->velocityCalls(), 1);
+    EXPECT_EQ(fakeDm->protocol()->lastVelocityMotor(), 0x141u);
+    EXPECT_EQ(fakeDm->protocol()->lastVelocity(), 12);
 }
 
 TEST_F(CanDriverHWSmokeTest, InitRejectsAliasedProtocolNodeIdsOnSameBus)

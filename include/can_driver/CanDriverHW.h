@@ -191,6 +191,7 @@ private:
     double startupPositionLimitToleranceRad_{1e-4};
     double startupProbeQueryHz_{5.0};
     double refreshInterFrameGapSec_{0.001};
+    double controlInterFrameGapSec_{0.0};
     uint32_t mtCommunicationTimeoutOnInitMs_{0};
     double safetyFeedbackFreshnessTimeoutSec_{0.5};
     bool safetyStopOnFault_{true};

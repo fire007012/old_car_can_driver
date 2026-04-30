@@ -146,6 +146,12 @@ void DeviceRuntime::setSharedDriverState(std::shared_ptr<can_driver::SharedDrive
     sharedState_ = std::move(sharedState);
 }
 
+void DeviceRuntime::setControlInterFrameGapUs(std::uint32_t gapUs)
+{
+    std::lock_guard<std::mutex> lock(mutex_);
+    options_.controlInterFrameGapUs = std::chrono::microseconds(gapUs);
+}
+
 void DeviceRuntime::shutdown()
 {
     {
@@ -222,56 +228,75 @@ void DeviceRuntime::workerLoop()
             sending_ = true;
         }
 
-        // --- Attempt send and handle result ---
-        CanTransport::SendResult result = CanTransport::SendResult::Error;
-        const auto sendTime = std::chrono::steady_clock::now();
-        if (transport_) {
-            result = transport_->send(request.frame);
-        }
-        if (request.completion) {
-            request.completion(true, result, sendTime);
-        }
-
-        switch (result) {
-        case CanTransport::SendResult::Ok:
-            sentCount_.fetch_add(1, std::memory_order_relaxed);
-            consecutiveBackpressure = 0;
-            break;
-
-        case CanTransport::SendResult::Backpressure:
-            sendBackpressureCount_.fetch_add(1, std::memory_order_relaxed);
-            ++consecutiveBackpressure;
-            if (consecutiveBackpressure >= options_.maxBackpressureRetries) {
-                // Back off: sleep briefly to let the kernel TX queue drain.
-                ROS_WARN_STREAM_THROTTLE(
-                    1.0,
-                    "[DeviceRuntime] " << consecutiveBackpressure
-                    << " consecutive backpressure events on " << deviceName_
-                    << ", sleeping " << options_.backpressureSleepUs.count() << "us");
-                std::this_thread::sleep_for(options_.backpressureSleepUs);
-                consecutiveBackpressure = 0;
+        for (;;) {
+            // --- Attempt send and handle result ---
+            CanTransport::SendResult result = CanTransport::SendResult::Error;
+            const auto sendTime = std::chrono::steady_clock::now();
+            if (transport_) {
+                result = transport_->send(request.frame);
             }
-            // Frame is lost (already counted by transport); move on.
-            break;
+            if (request.completion) {
+                request.completion(true, result, sendTime);
+            }
 
-        case CanTransport::SendResult::LinkDown:
-            sendLinkDownCount_.fetch_add(1, std::memory_order_relaxed);
-            consecutiveBackpressure = 0;
-            // Frame is lost; link-level recovery is outside our scope.
-            break;
+            switch (result) {
+            case CanTransport::SendResult::Ok:
+                sentCount_.fetch_add(1, std::memory_order_relaxed);
+                consecutiveBackpressure = 0;
+                break;
 
-        case CanTransport::SendResult::Error:
-            sendErrorCount_.fetch_add(1, std::memory_order_relaxed);
-            consecutiveBackpressure = 0;
-            break;
+            case CanTransport::SendResult::Backpressure:
+                sendBackpressureCount_.fetch_add(1, std::memory_order_relaxed);
+                ++consecutiveBackpressure;
+                if (consecutiveBackpressure >= options_.maxBackpressureRetries) {
+                    // Back off: sleep briefly to let the kernel TX queue drain.
+                    ROS_WARN_STREAM_THROTTLE(
+                        1.0,
+                        "[DeviceRuntime] " << consecutiveBackpressure
+                        << " consecutive backpressure events on " << deviceName_
+                        << ", sleeping " << options_.backpressureSleepUs.count() << "us");
+                    std::this_thread::sleep_for(options_.backpressureSleepUs);
+                    consecutiveBackpressure = 0;
+                }
+                // Frame is lost (already counted by transport); move on.
+                break;
+
+            case CanTransport::SendResult::LinkDown:
+                sendLinkDownCount_.fetch_add(1, std::memory_order_relaxed);
+                consecutiveBackpressure = 0;
+                // Frame is lost; link-level recovery is outside our scope.
+                break;
+
+            case CanTransport::SendResult::Error:
+                sendErrorCount_.fetch_add(1, std::memory_order_relaxed);
+                consecutiveBackpressure = 0;
+                break;
+            }
+
+            noteSharedSendResult(result);
+
+            std::unique_lock<std::mutex> lock(mutex_);
+            if (controlQueue_.empty() && request.category == Category::Control &&
+                options_.controlBurstCoalesceUs.count() > 0) {
+                cv_.wait_for(lock, options_.controlBurstCoalesceUs, [this]() {
+                    return stopRequested_ || !controlQueue_.empty();
+                });
+            }
+            if (controlQueue_.empty()) {
+                sending_ = false;
+                break;
+            }
+            if (request.category == Category::Control &&
+                options_.controlInterFrameGapUs.count() > 0) {
+                const auto gap = options_.controlInterFrameGapUs;
+                lock.unlock();
+                std::this_thread::sleep_for(gap);
+                lock.lock();
+            }
+            request = controlQueue_.front();
+            controlQueue_.pop_front();
         }
 
-        noteSharedSendResult(result);
-
-        {
-            std::lock_guard<std::mutex> lock(mutex_);
-            sending_ = false;
-        }
         idleCv_.notify_all();
     }
 }

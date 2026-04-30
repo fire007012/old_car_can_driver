@@ -327,6 +327,14 @@ bool CanDriverHW::loadRuntimeParams(const ros::NodeHandle &pnh)
                  refreshInterFrameGapSec_);
         refreshInterFrameGapSec_ = 0.001;
     }
+    if (!pnh.getParam("control_inter_frame_gap_sec", controlInterFrameGapSec_)) {
+        controlInterFrameGapSec_ = 0.0;
+    }
+    if (!std::isfinite(controlInterFrameGapSec_) || controlInterFrameGapSec_ < 0.0) {
+        ROS_WARN("[CanDriverHW] Invalid control_inter_frame_gap_sec=%.9g, fallback to 0.0s.",
+                 controlInterFrameGapSec_);
+        controlInterFrameGapSec_ = 0.0;
+    }
     if (!pnh.getParam("safety_feedback_freshness_timeout_sec",
                       safetyFeedbackFreshnessTimeoutSec_)) {
         safetyFeedbackFreshnessTimeoutSec_ = 0.5;
@@ -403,6 +411,8 @@ bool CanDriverHW::loadRuntimeParams(const ros::NodeHandle &pnh)
     deviceManager_->setRefreshRateHz(motorQueryHz_);
     deviceManager_->setRefreshInterFrameGapUs(static_cast<uint32_t>(
         std::llround(refreshInterFrameGapSec_ * 1e6)));
+    deviceManager_->setControlInterFrameGapUs(static_cast<uint32_t>(
+        std::llround(controlInterFrameGapSec_ * 1e6)));
     deviceManager_->setMtCommunicationTimeoutOnInitMs(mtCommunicationTimeoutOnInitMs_);
     lifecycleDriverOps_.setFeedbackFreshnessTimeoutNs(
         static_cast<std::int64_t>(safetyFeedbackFreshnessTimeoutSec_ * 1e9));
@@ -422,6 +432,8 @@ bool CanDriverHW::loadRuntimeParams(const ros::NodeHandle &pnh)
              startupProbeQueryHz_);
     ROS_INFO("[CanDriverHW] refresh_inter_frame_gap_sec=%.6f s.",
              refreshInterFrameGapSec_);
+    ROS_INFO("[CanDriverHW] control_inter_frame_gap_sec=%.6f s.",
+             controlInterFrameGapSec_);
     ROS_INFO("[CanDriverHW] mt_communication_timeout_on_init_ms=%u.",
              mtCommunicationTimeoutOnInitMs_);
     ROS_INFO("[CanDriverHW] safety_feedback_freshness_timeout_sec=%.3f s.",
