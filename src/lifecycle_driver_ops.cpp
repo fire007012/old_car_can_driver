@@ -734,7 +734,8 @@ bool LifecycleDriverOps::enableHealthy(std::string *detail) const
         }
 
         const bool retryable = lastDetail.find("Feedback degraded.") != std::string::npos ||
-                               lastDetail.find("Feedback offline.") != std::string::npos;
+                               lastDetail.find("Feedback offline.") != std::string::npos ||
+                               lastDetail.find("Feedback stale.") != std::string::npos;
         if (!retryable || std::chrono::steady_clock::now() >= deadline) {
             if (detail) {
                 *detail = lastDetail;
@@ -743,6 +744,11 @@ bool LifecycleDriverOps::enableHealthy(std::string *detail) const
         }
         std::this_thread::sleep_for(std::chrono::milliseconds(50));
     }
+}
+
+bool LifecycleDriverOps::enableHealthySnapshot(std::string *detail) const
+{
+    return enableHealthyOnce(detail);
 }
 
 bool LifecycleDriverOps::enableHealthyOnce(std::string *detail) const
@@ -822,7 +828,8 @@ bool LifecycleDriverOps::motionHealthy(std::string *detail) const
         }
 
         const bool retryable = lastDetail.find("Feedback degraded.") != std::string::npos ||
-                               lastDetail.find("Feedback offline.") != std::string::npos;
+                               lastDetail.find("Feedback offline.") != std::string::npos ||
+                               lastDetail.find("Feedback stale.") != std::string::npos;
         if (!retryable || std::chrono::steady_clock::now() >= deadline) {
             if (detail) {
                 *detail = lastDetail;
@@ -831,6 +838,11 @@ bool LifecycleDriverOps::motionHealthy(std::string *detail) const
         }
         std::this_thread::sleep_for(std::chrono::milliseconds(50));
     }
+}
+
+bool LifecycleDriverOps::motionHealthySnapshot(std::string *detail) const
+{
+    return motionHealthyOnce(detail);
 }
 
 bool LifecycleDriverOps::motionHealthyOnce(std::string *detail) const

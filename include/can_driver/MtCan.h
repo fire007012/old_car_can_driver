@@ -131,8 +131,10 @@ public:
     void setCommunicationTimeoutOnInit(uint32_t timeoutMs);
     /// 返回当前注册电机的建议查询周期。
     std::chrono::milliseconds refreshSleepInterval() const;
+    /// 返回单个 MT 读请求在判定超时前应等待的时间。
+    std::chrono::milliseconds readResponseTimeout() const;
     using RefreshQuery = can_driver::MtRefreshQuery;
-    void issueRefreshQuery(MotorID motorId, RefreshQuery query);
+    bool issueRefreshQuery(MotorID motorId, RefreshQuery query);
 
 private:
     struct MotorState {
@@ -190,15 +192,15 @@ private:
     /**
      * @brief 触发读状态命令（0x9C）
      */
-    void requestState(uint8_t motorId);
+    bool requestState(uint8_t motorId);
     /**
      * @brief 触发读错误命令（0x9A）
      */
-    void requestError(uint8_t motorId);
+    bool requestError(uint8_t motorId);
     /**
      * @brief 触发读多圈角度命令（0x92）
      */
-    void requestMultiTurnAngle(uint8_t motorId);
+    bool requestMultiTurnAngle(uint8_t motorId);
     /**
      * @brief 复位系统（0x76）
      */
@@ -225,6 +227,9 @@ private:
     bool submitTx(const CanTransport::Frame &frame,
                   CanTxDispatcher::Category category,
                   const char *source) const;
+    static CanTransport::Frame makeCommandFrame(uint16_t canId,
+                                                uint8_t command,
+                                                const std::array<uint8_t, 4> &payload);
     void onReadDispatchResult(uint8_t motorId,
                               uint8_t command,
                               bool attemptedSend,

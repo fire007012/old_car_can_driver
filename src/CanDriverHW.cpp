@@ -67,18 +67,23 @@ const char *protocolDisplayName(CanType protocol)
     return "UNKNOWN";
 }
 
-bool sharedFeedbackFresh(const can_driver::SharedDriverState::AxisFeedbackState &feedback)
+bool sharedFeedbackFresh(const can_driver::SharedDriverState::AxisFeedbackState &feedback,
+                         std::int64_t feedbackFreshnessTimeoutNs)
 {
     if (!feedback.feedbackSeen || feedback.lastRxSteadyNs <= 0) {
         return false;
     }
 
     const auto nowNs = can_driver::SharedDriverSteadyNowNs();
-    const can_driver::AxisReadinessEvaluator::Config config;
-    if (config.feedbackFreshnessTimeoutNs <= 0 || nowNs <= feedback.lastRxSteadyNs) {
+    if (feedbackFreshnessTimeoutNs <= 0 || nowNs <= feedback.lastRxSteadyNs) {
         return true;
     }
-    return (nowNs - feedback.lastRxSteadyNs) <= config.feedbackFreshnessTimeoutNs;
+    return (nowNs - feedback.lastRxSteadyNs) <= feedbackFreshnessTimeoutNs;
+}
+
+bool lifecycleDetailIsFaultTrigger(const std::string &detail)
+{
+    return detail.find("Feedback stale.") == std::string::npos;
 }
 
 bool startupFeedbackSatisfiesRequirement(const can_driver::CanDriverJointConfig &joint,
@@ -1108,7 +1113,9 @@ std::vector<CanDriverHW::JointRuntimeStateView> CanDriverHW::snapshotJointRuntim
             if (sharedState->getAxisFeedback(axisKey, &feedback)) {
                 item.enabled = feedback.enabledValid && feedback.enabled;
                 item.fault = feedback.faultValid && feedback.fault;
-                item.feedbackFresh = sharedFeedbackFresh(feedback);
+                item.feedbackFresh = sharedFeedbackFresh(
+                    feedback,
+                    static_cast<std::int64_t>(safetyFeedbackFreshnessTimeoutSec_ * 1e9));
             }
 
             can_driver::SharedDriverState::AxisCommandState command;
@@ -1645,6 +1652,7 @@ void CanDriverHW::write(const ros::Time & /*time*/, const ros::Duration &period)
         safetyRequireEnabledForMotion_,
         maxPositionStepRad_,
         safetyHoldAfterDeviceRecover_,
+        static_cast<std::int64_t>(safetyFeedbackFreshnessTimeoutSec_ * 1e9),
     };
     can_driver::CanDriverIoRuntime::PrepareCommands(
         &joints_,
@@ -1665,7 +1673,8 @@ void CanDriverHW::write(const ros::Time & /*time*/, const ros::Duration &period)
                                                              &anyFaultObserved);
     bool unhealthy = anyFaultObserved;
     std::string healthDetail;
-    if (!unhealthy && !lifecycleHealthHealthy(&healthDetail)) {
+    if (!unhealthy && !lifecycleHealthHealthy(&healthDetail) &&
+        lifecycleDetailIsFaultTrigger(healthDetail)) {
         unhealthy = true;
         ROS_WARN_THROTTLE(1.0,
                           "[CanDriverHW] Auto-fault because lifecycle health check failed: %s",
@@ -1751,7 +1760,9 @@ bool CanDriverHW::getFreshAxisFeedback(
         return false;
     }
 
-    return sharedFeedbackFresh(*feedback);
+    return sharedFeedbackFresh(
+        *feedback,
+        static_cast<std::int64_t>(safetyFeedbackFreshnessTimeoutSec_ * 1e9));
 }
 
 bool CanDriverHW::requireAxisDisabledForConfiguration(const JointConfig &joint,
@@ -1782,13 +1793,13 @@ bool CanDriverHW::lifecycleHealthHealthy(std::string *detail) const
 {
     const auto mode = lifecycleCoordinator_.mode();
     if (mode == can_driver::SystemOpMode::Armed) {
-        return lifecycleDriverOps_.enableHealthy(detail);
+        return lifecycleDriverOps_.enableHealthySnapshot(detail);
     }
     if (mode == can_driver::SystemOpMode::Running) {
         if (!lifecycleRequireEnabledForRunning_) {
-            return lifecycleDriverOps_.enableHealthy(detail);
+            return lifecycleDriverOps_.enableHealthySnapshot(detail);
         }
-        return lifecycleDriverOps_.motionHealthy(detail);
+        return lifecycleDriverOps_.motionHealthySnapshot(detail);
     }
     return true;
 }
@@ -1799,10 +1810,15 @@ void CanDriverHW::publishMotorStates(ros::Publisher &publisher)
         return;
     }
     auto publishResult = can_driver::CanDriverIoRuntime::BuildMotorStateMessages(
-        *deviceManager_, jointGroups_, joints_, &jointStateMutex_);
+        *deviceManager_,
+        jointGroups_,
+        joints_,
+        &jointStateMutex_,
+        static_cast<std::int64_t>(safetyFeedbackFreshnessTimeoutSec_ * 1e9));
     bool unhealthy = publishResult.anyFault;
     std::string healthDetail;
-    if (!unhealthy && !lifecycleHealthHealthy(&healthDetail)) {
+    if (!unhealthy && !lifecycleHealthHealthy(&healthDetail) &&
+        lifecycleDetailIsFaultTrigger(healthDetail)) {
         unhealthy = true;
         ROS_WARN_THROTTLE(1.0,
                           "[CanDriverHW] Auto-fault because lifecycle health check failed: %s",

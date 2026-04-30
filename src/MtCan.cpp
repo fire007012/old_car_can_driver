@@ -1,7 +1,6 @@
 #include "can_driver/MtCan.h"
 #include "can_driver/DeviceRuntime.h"
 
-#include <algorithm>
 #include <array>
 #include <chrono>
 #include <cmath>
@@ -9,6 +8,7 @@
 #include <cstdint>
 #include <iomanip>
 #include <iostream>
+#include <sstream>
 
 #include <ros/ros.h>
 
@@ -23,7 +23,7 @@ constexpr int32_t kDefaultPositionSpeedDps = 100;
 constexpr std::size_t kQueriesPerMotorPerCycle = 3;
 constexpr int64_t kBaseReadTimeoutCycles = 3;
 constexpr int64_t kMaxReadTimeoutCycles = 8;
-constexpr auto kMinReadRequestTimeout = std::chrono::milliseconds(30);
+constexpr auto kMinReadRequestTimeout = std::chrono::milliseconds(250);
 constexpr auto kMaxReadRequestTimeout = std::chrono::milliseconds(1500);
 
 int16_t readInt16LE(const CanTransport::Frame &frame, std::size_t index)
@@ -55,6 +55,13 @@ int32_t readInt32LE(const CanTransport::Frame &frame, std::size_t index)
                            (static_cast<uint32_t>(frame.data[index + 2]) << 16) |
                            (static_cast<uint32_t>(frame.data[index + 3]) << 24);
     return static_cast<int32_t>(value);
+}
+
+std::string formatCommandHex(uint8_t command)
+{
+    std::ostringstream stream;
+    stream << std::hex << static_cast<unsigned>(command);
+    return stream.str();
 }
 
 } // namespace
@@ -157,6 +164,11 @@ std::chrono::milliseconds MtCan::refreshSleepInterval() const
     return computeRefreshSleep(std::max<std::size_t>(1, motorCount));
 }
 
+std::chrono::milliseconds MtCan::readResponseTimeout() const
+{
+    return computeReadRequestTimeout();
+}
+
 bool MtCan::setMode(MotorID Id, MotorMode mode)
 {
     const uint8_t motorId = toMtProtocolNodeId(Id);
@@ -169,21 +181,19 @@ bool MtCan::setMode(MotorID Id, MotorMode mode)
     return true;
 }
 
-void MtCan::issueRefreshQuery(MotorID motorId, RefreshQuery query)
+bool MtCan::issueRefreshQuery(MotorID motorId, RefreshQuery query)
 {
     rememberSystemMotorId(motorId);
     const uint8_t id = toMtProtocolNodeId(motorId);
     switch (query) {
     case RefreshQuery::State:
-        requestState(id);
-        break;
+        return requestState(id);
     case RefreshQuery::MultiTurnAngle:
-        requestMultiTurnAngle(id);
-        break;
+        return requestMultiTurnAngle(id);
     case RefreshQuery::Error:
-        requestError(id);
-        break;
+        return requestError(id);
     }
+    return false;
 }
 
 bool MtCan::setVelocity(MotorID Id, int32_t velocity)
@@ -382,11 +392,16 @@ bool MtCan::Enable(MotorID Id)
     }
     const uint8_t motorId = toMtProtocolNodeId(Id);
     rememberSystemMotorId(Id);
+    MotorState stateSnapshot;
     {
         std::lock_guard<std::mutex> stateLock(stateMutex);
-        motorStates[motorId].enabled = true;
+        MotorState &state = motorStates[motorId];
+        state.enabled = true;
+        state.enabledReceived = true;
+        stateSnapshot = state;
     }
     syncSharedIntent(motorId, can_driver::AxisIntent::Enable);
+    syncSharedFeedback(motorId, stateSnapshot);
     // 脉塔协议无独立使能命令。
     // 如需设置零点请单独调用 setZeroPosition()，避免频繁写 ROM。
     return true;
@@ -400,11 +415,16 @@ bool MtCan::Disable(MotorID Id)
     }
     const uint8_t motorId = toMtProtocolNodeId(Id);
     rememberSystemMotorId(Id);
+    MotorState stateSnapshot;
     {
         std::lock_guard<std::mutex> stateLock(stateMutex);
-        motorStates[motorId].enabled = false;
+        MotorState &state = motorStates[motorId];
+        state.enabled = false;
+        state.enabledReceived = true;
+        stateSnapshot = state;
     }
     syncSharedIntent(motorId, can_driver::AxisIntent::Disable);
+    syncSharedFeedback(motorId, stateSnapshot);
     const uint16_t canId = encodeSendCanId(motorId);
     sendFrame(canId, 0x80, {0, 0, 0, 0}); // Motor Off: 关闭输出，清除运行状态
     return true;
@@ -506,6 +526,21 @@ void MtCan::sendFrame(uint16_t canId, uint8_t command, const std::array<uint8_t,
         return;
     }
 
+    CanTransport::Frame frame = makeCommandFrame(canId, command, payload);
+
+    auto category = CanTxDispatcher::Category::Control;
+    if (command == 0x76) {
+        category = CanTxDispatcher::Category::Recover;
+    } else if (command == 0x64 || command == 0xB3 || command == 0x43) {
+        category = CanTxDispatcher::Category::Config;
+    }
+    (void)submitTx(frame, category, "MtCan::sendFrame");
+}
+
+CanTransport::Frame MtCan::makeCommandFrame(uint16_t canId,
+                                            uint8_t command,
+                                            const std::array<uint8_t, 4> &payload)
+{
     CanTransport::Frame frame;
     frame.id = canId;
     frame.dlc = 8;
@@ -519,24 +554,17 @@ void MtCan::sendFrame(uint16_t canId, uint8_t command, const std::array<uint8_t,
     frame.data[5] = payload[1];
     frame.data[6] = payload[2];
     frame.data[7] = payload[3];
-
-    auto category = CanTxDispatcher::Category::Control;
-    if (command == 0x76) {
-        category = CanTxDispatcher::Category::Recover;
-    } else if (command == 0x64 || command == 0xB3 || command == 0x43) {
-        category = CanTxDispatcher::Category::Config;
-    }
-    (void)submitTx(frame, category, "MtCan::sendFrame");
+    return frame;
 }
 
 // [FIX #2] DLC 改为 8，数据全部清零
-void MtCan::requestState(uint8_t motorId)
+bool MtCan::requestState(uint8_t motorId)
 {
     if (!canController) {
-        return;
+        return false;
     }
     if (!tryIssueReadCommand(motorId, 0x9C)) {
-        return;
+        return false;
     }
     const uint16_t canId = encodeSendCanId(motorId);
 
@@ -556,7 +584,7 @@ void MtCan::requestState(uint8_t motorId)
                              false,
                              CanTransport::SendResult::Error,
                              std::chrono::steady_clock::now());
-        return;
+        return false;
     }
 
     CanTxDispatcher::Request request;
@@ -569,16 +597,17 @@ void MtCan::requestState(uint8_t motorId)
         onReadDispatchResult(motorId, 0x9C, attemptedSend, sendResult, eventTime);
     };
     txDispatcher_->submit(request);
+    return true;
 }
 
 // [FIX #2] DLC 改为 8，数据全部清零
-void MtCan::requestError(uint8_t motorId)
+bool MtCan::requestError(uint8_t motorId)
 {
     if (!canController) {
-        return;
+        return false;
     }
     if (!tryIssueReadCommand(motorId, 0x9A)) {
-        return;
+        return false;
     }
     const uint16_t canId = encodeSendCanId(motorId);
 
@@ -598,7 +627,7 @@ void MtCan::requestError(uint8_t motorId)
                              false,
                              CanTransport::SendResult::Error,
                              std::chrono::steady_clock::now());
-        return;
+        return false;
     }
 
     CanTxDispatcher::Request request;
@@ -611,16 +640,17 @@ void MtCan::requestError(uint8_t motorId)
         onReadDispatchResult(motorId, 0x9A, attemptedSend, sendResult, eventTime);
     };
     txDispatcher_->submit(request);
+    return true;
 }
 
 // [FIX #5 NEW] 请求多圈角度 (0x92) 以获取实际位置
-void MtCan::requestMultiTurnAngle(uint8_t motorId)
+bool MtCan::requestMultiTurnAngle(uint8_t motorId)
 {
     if (!canController) {
-        return;
+        return false;
     }
     if (!tryIssueReadCommand(motorId, 0x92)) {
-        return;
+        return false;
     }
     const uint16_t canId = encodeSendCanId(motorId);
 
@@ -640,7 +670,7 @@ void MtCan::requestMultiTurnAngle(uint8_t motorId)
                              false,
                              CanTransport::SendResult::Error,
                              std::chrono::steady_clock::now());
-        return;
+        return false;
     }
 
     CanTxDispatcher::Request request;
@@ -653,6 +683,7 @@ void MtCan::requestMultiTurnAngle(uint8_t motorId)
         onReadDispatchResult(motorId, 0x92, attemptedSend, sendResult, eventTime);
     };
     txDispatcher_->submit(request);
+    return true;
 }
 
 bool MtCan::submitTx(const CanTransport::Frame &frame,
@@ -731,13 +762,17 @@ bool MtCan::tryIssueReadCommand(uint8_t motorId, uint8_t command)
 
     if (delayRetry) {
         noteSharedTimeout(motorId, consecutiveTimeouts);
-        ROS_WARN_STREAM_THROTTLE(
-            1.0,
-            "[MtCan] Read timeout on motor " << static_cast<unsigned>(motorId)
-            << " cmd=0x" << std::hex << static_cast<unsigned>(command) << std::dec
-            << ", backing off for " << retryBackoff.count()
-            << " ms before retry"
-            << " (consecutive_timeouts=" << consecutiveTimeouts << ")");
+        const auto message = "[MtCan] Read timeout on motor " +
+                             std::to_string(static_cast<unsigned>(motorId)) +
+                             " cmd=0x" + formatCommandHex(command) +
+                             ", backing off for " + std::to_string(retryBackoff.count()) +
+                             " ms before retry" +
+                             " (consecutive_timeouts=" + std::to_string(consecutiveTimeouts) + ")";
+        if (consecutiveTimeouts >= can_driver::kDefaultFeedbackDegradedTimeoutThreshold) {
+            ROS_WARN_STREAM_THROTTLE(1.0, message);
+        } else {
+            ROS_DEBUG_STREAM_THROTTLE(1.0, message);
+        }
         return false;
     }
 
@@ -790,12 +825,17 @@ void MtCan::markReadResponseReceived(uint8_t motorId, uint8_t command)
     }
 
     if (recoveredTimeouts > 0) {
-        ROS_WARN_STREAM_THROTTLE(
-            1.0,
-            "[MtCan] Read response recovered on motor " << static_cast<unsigned>(motorId)
-            << " cmd=0x" << std::hex << static_cast<unsigned>(command) << std::dec
-            << " after " << recoveredTimeouts << " consecutive timeout(s)"
-            << " (response_age_ms=" << responseAgeMs << ")");
+        const auto message = "[MtCan] Read response recovered on motor " +
+                             std::to_string(static_cast<unsigned>(motorId)) +
+                             " cmd=0x" + formatCommandHex(command) +
+                             " after " + std::to_string(recoveredTimeouts) +
+                             " consecutive timeout(s)" +
+                             " (response_age_ms=" + std::to_string(responseAgeMs) + ")";
+        if (recoveredTimeouts >= can_driver::kDefaultFeedbackDegradedTimeoutThreshold) {
+            ROS_WARN_STREAM_THROTTLE(1.0, message);
+        } else {
+            ROS_DEBUG_STREAM_THROTTLE(1.0, message);
+        }
     }
 }
 
@@ -895,6 +935,8 @@ void MtCan::noteSharedTimeout(uint8_t motorId, std::size_t consecutiveTimeouts) 
         [consecutiveTimeouts](can_driver::SharedDriverState::AxisFeedbackState *feedback) {
             feedback->consecutiveTimeoutCount =
                 static_cast<std::uint32_t>(consecutiveTimeouts);
+            feedback->degraded = feedback->consecutiveTimeoutCount >=
+                                 can_driver::kDefaultFeedbackDegradedTimeoutThreshold;
         });
 }
 

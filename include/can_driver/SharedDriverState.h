@@ -15,6 +15,8 @@
 
 namespace can_driver {
 
+constexpr std::uint32_t kDefaultFeedbackDegradedTimeoutThreshold = 3u;
+
 inline std::int64_t SharedDriverSteadyNowNs()
 {
     return std::chrono::duration_cast<std::chrono::nanoseconds>(
@@ -247,7 +249,8 @@ private:
         if (!feedback) {
             return;
         }
-        feedback->degraded = feedback->consecutiveTimeoutCount > 0;
+        feedback->degraded = feedback->consecutiveTimeoutCount >=
+                             kDefaultFeedbackDegradedTimeoutThreshold;
     }
 
     mutable std::mutex mutex_;

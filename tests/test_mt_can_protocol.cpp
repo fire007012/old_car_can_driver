@@ -136,6 +136,7 @@ public:
         const auto it = mt.pendingReadRequests_.find(MtCan::pendingReadKey(motorId, command));
         return (it == mt.pendingReadRequests_.end()) ? false : it->second.inFlight;
     }
+
 };
 
 TEST_F(MtCanTest, SetVelocityEncodesExpectedFrame)
@@ -259,9 +260,9 @@ TEST_F(MtCanTest, IssueRefreshQueryMapsEnumsToExpectedCommands)
 {
     constexpr MotorID kMotorId = static_cast<MotorID>(0x01);
 
-    mt.issueRefreshQuery(kMotorId, MtCan::RefreshQuery::State);
-    mt.issueRefreshQuery(kMotorId, MtCan::RefreshQuery::MultiTurnAngle);
-    mt.issueRefreshQuery(kMotorId, MtCan::RefreshQuery::Error);
+    EXPECT_TRUE(mt.issueRefreshQuery(kMotorId, MtCan::RefreshQuery::State));
+    EXPECT_TRUE(mt.issueRefreshQuery(kMotorId, MtCan::RefreshQuery::MultiTurnAngle));
+    EXPECT_TRUE(mt.issueRefreshQuery(kMotorId, MtCan::RefreshQuery::Error));
 
     ASSERT_EQ(txDispatcher->requests.size(), 3u);
     ASSERT_EQ(transport->sentFrames.size(), 3u);
@@ -391,10 +392,10 @@ TEST_F(MtCanTest, GetPositionWithoutCacheReturnsZeroWithoutSendingReadRequest)
 
 TEST_F(MtCanTest, IssueRefreshQueryDoesNotResendSameReadWhileRequestIsInFlight)
 {
-    mt.issueRefreshQuery(static_cast<MotorID>(0x01), MtCan::RefreshQuery::State);
+    EXPECT_TRUE(mt.issueRefreshQuery(static_cast<MotorID>(0x01), MtCan::RefreshQuery::State));
     ASSERT_EQ(transport->sentFrames.size(), 1u);
 
-    mt.issueRefreshQuery(static_cast<MotorID>(0x01), MtCan::RefreshQuery::State);
+    EXPECT_FALSE(mt.issueRefreshQuery(static_cast<MotorID>(0x01), MtCan::RefreshQuery::State));
     EXPECT_EQ(transport->sentFrames.size(), 1u);
 }
 
@@ -402,13 +403,13 @@ TEST_F(MtCanTest, QueuedReadRequestDoesNotStartTimeoutBeforeActualSend)
 {
     txDispatcher->autoSend = false;
 
-    mt.issueRefreshQuery(static_cast<MotorID>(0x01), MtCan::RefreshQuery::State);
+    EXPECT_TRUE(mt.issueRefreshQuery(static_cast<MotorID>(0x01), MtCan::RefreshQuery::State));
     ASSERT_EQ(txDispatcher->requests.size(), 1u);
     EXPECT_TRUE(MtCanTestAccessor::isQueued(mt, 0x01, 0x9C));
     EXPECT_FALSE(MtCanTestAccessor::isInFlight(mt, 0x01, 0x9C));
 
     MtCanTestAccessor::ageAllPendingRequests(mt, std::chrono::milliseconds(500));
-    mt.issueRefreshQuery(static_cast<MotorID>(0x01), MtCan::RefreshQuery::State);
+    EXPECT_FALSE(mt.issueRefreshQuery(static_cast<MotorID>(0x01), MtCan::RefreshQuery::State));
 
     EXPECT_EQ(txDispatcher->requests.size(), 1u);
     EXPECT_EQ(MtCanTestAccessor::consecutiveTimeouts(mt, 0x01, 0x9C), 0u);
@@ -417,16 +418,16 @@ TEST_F(MtCanTest, QueuedReadRequestDoesNotStartTimeoutBeforeActualSend)
 
 TEST_F(MtCanTest, IssueRefreshQueryBacksOffAfterRepeatedReadTimeouts)
 {
-    mt.issueRefreshQuery(static_cast<MotorID>(0x01), MtCan::RefreshQuery::State);
+    EXPECT_TRUE(mt.issueRefreshQuery(static_cast<MotorID>(0x01), MtCan::RefreshQuery::State));
     ASSERT_EQ(transport->sentFrames.size(), 1u);
 
-    MtCanTestAccessor::ageAllPendingRequests(mt, std::chrono::milliseconds(40));
-    mt.issueRefreshQuery(static_cast<MotorID>(0x01), MtCan::RefreshQuery::State);
+    MtCanTestAccessor::ageAllPendingRequests(mt, std::chrono::milliseconds(260));
+    EXPECT_FALSE(mt.issueRefreshQuery(static_cast<MotorID>(0x01), MtCan::RefreshQuery::State));
     EXPECT_EQ(transport->sentFrames.size(), 1u);
     EXPECT_EQ(MtCanTestAccessor::consecutiveTimeouts(mt, 0x01, 0x9C), 1u);
 
     MtCanTestAccessor::expireAllPendingBackoff(mt);
-    mt.issueRefreshQuery(static_cast<MotorID>(0x01), MtCan::RefreshQuery::State);
+    EXPECT_TRUE(mt.issueRefreshQuery(static_cast<MotorID>(0x01), MtCan::RefreshQuery::State));
     EXPECT_EQ(transport->sentFrames.size(), 2u);
 
     can_driver::SharedDriverState::AxisFeedbackState feedback;
@@ -434,7 +435,7 @@ TEST_F(MtCanTest, IssueRefreshQueryBacksOffAfterRepeatedReadTimeouts)
         sharedState->getAxisFeedback(can_driver::MakeAxisKey("can0", CanType::MT, static_cast<MotorID>(0x01)),
                                      &feedback));
     EXPECT_EQ(feedback.consecutiveTimeoutCount, 1u);
-    EXPECT_TRUE(feedback.degraded);
+    EXPECT_FALSE(feedback.degraded);
 }
 
 TEST_F(MtCanTest, FreshFeedbackClearsSharedTimeoutDegradedState)
@@ -444,14 +445,14 @@ TEST_F(MtCanTest, FreshFeedbackClearsSharedTimeoutDegradedState)
     mt.issueRefreshQuery(kMotorId, MtCan::RefreshQuery::State);
     ASSERT_EQ(transport->sentFrames.size(), 1u);
 
-    MtCanTestAccessor::ageAllPendingRequests(mt, std::chrono::milliseconds(40));
+    MtCanTestAccessor::ageAllPendingRequests(mt, std::chrono::milliseconds(260));
     mt.issueRefreshQuery(kMotorId, MtCan::RefreshQuery::State);
 
     can_driver::SharedDriverState::AxisFeedbackState feedback;
     ASSERT_TRUE(sharedState->getAxisFeedback(
         can_driver::MakeAxisKey("can0", CanType::MT, kMotorId), &feedback));
     ASSERT_EQ(feedback.consecutiveTimeoutCount, 1u);
-    ASSERT_TRUE(feedback.degraded);
+    ASSERT_FALSE(feedback.degraded);
 
     CanTransport::Frame frame;
     frame.id = 0x241;
@@ -510,11 +511,23 @@ TEST_F(MtCanTest, InitializeMotorRefreshBroadcastsConfiguredCommunicationTimeout
 TEST_F(MtCanTest, EnableDisableAndFaultStateAreObservable)
 {
     constexpr MotorID kMotorId = static_cast<MotorID>(0x01);
+    const auto axisKey = can_driver::MakeAxisKey("can0", CanType::MT, kMotorId);
+
     EXPECT_TRUE(mt.Enable(kMotorId));
     EXPECT_TRUE(mt.isEnabled(kMotorId));
 
+    can_driver::SharedDriverState::AxisFeedbackState feedback;
+    ASSERT_TRUE(sharedState->getAxisFeedback(axisKey, &feedback));
+    EXPECT_TRUE(feedback.feedbackSeen);
+    EXPECT_TRUE(feedback.enabledValid);
+    EXPECT_TRUE(feedback.enabled);
+
     EXPECT_TRUE(mt.Disable(kMotorId));
     EXPECT_FALSE(mt.isEnabled(kMotorId));
+    ASSERT_TRUE(sharedState->getAxisFeedback(axisKey, &feedback));
+    EXPECT_TRUE(feedback.feedbackSeen);
+    EXPECT_TRUE(feedback.enabledValid);
+    EXPECT_FALSE(feedback.enabled);
     ASSERT_FALSE(transport->sentFrames.empty());
     EXPECT_EQ(transport->sentFrames.back().data[0], 0x80);
 

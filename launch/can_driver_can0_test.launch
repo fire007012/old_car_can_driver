@@ -1,13 +1,15 @@
 <launch>
-  <!-- can0 classified low-level integration entry.
-       Loads only can0 joints and drives /can_driver_node lifecycle to Running. -->
+    <!-- can0 classified low-level integration entry.
+      Defaults to wheel-only joints for chassis tests; pass
+      joints_overlay:=$(find can_driver)/config/can_driver_joints_can0_only.yaml
+      for full can0 MT tests. -->
   <arg name="use_controllers" default="false"/>
   <arg name="init_loopback" default="false"/>
   <arg name="auto_recover" default="false"/>
   <arg name="lifecycle_max_attempts" default="3"/>
   <arg name="startup_position_sync_timeout_sec" default="3.0"/>
   <arg name="robot_urdf" default="$(find car_urdf)/urdf/car_urdf.urdf"/>
-  <arg name="joints_overlay" default="$(find can_driver)/config/can_driver_joints_can0_only.yaml"/>
+  <arg name="joints_overlay" default="$(find can_driver)/config/can_driver_joints_wheels_only.yaml"/>
 
   <include file="$(find can_driver)/launch/can_driver.launch">
     <arg name="use_controllers" value="$(arg use_controllers)"/>

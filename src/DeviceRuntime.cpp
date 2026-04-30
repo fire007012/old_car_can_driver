@@ -32,57 +32,11 @@ void DeviceRuntime::submit(const Request &request)
     bool accepted = false;
     {
         std::lock_guard<std::mutex> lock(mutex_);
-        if (stopRequested_) {
-            // Runtime is shutting down — count as dropped.
-            switch (request.category) {
-            case Category::Control:
-                droppedControlCount_.fetch_add(1, std::memory_order_relaxed);
-                break;
-            case Category::Recover:
-                droppedRecoverCount_.fetch_add(1, std::memory_order_relaxed);
-                break;
-            case Category::Config:
-                droppedConfigCount_.fetch_add(1, std::memory_order_relaxed);
-                break;
-            case Category::Query:
-                droppedQueryCount_.fetch_add(1, std::memory_order_relaxed);
-                break;
-            }
-        } else if (request.category == Category::Control) {
-            // Control frames use "drop-oldest, keep-newest" eviction.
-            enqueueControlLocked(request);
-            submittedCount_.fetch_add(1, std::memory_order_relaxed);
-            accepted = true;
-        } else {
-            Queue &queue = queueFor(request.category);
-            if (queue.size() >= maxDepthFor(request.category)) {
-                switch (request.category) {
-                case Category::Control:
-                    break; // handled above
-                case Category::Recover:
-                    droppedRecoverCount_.fetch_add(1, std::memory_order_relaxed);
-                    break;
-                case Category::Config:
-                    droppedConfigCount_.fetch_add(1, std::memory_order_relaxed);
-                    break;
-                case Category::Query:
-                    droppedQueryCount_.fetch_add(1, std::memory_order_relaxed);
-                    break;
-                }
-            } else {
-                queue.push_back(request);
-                submittedCount_.fetch_add(1, std::memory_order_relaxed);
-                accepted = true;
-            }
-        }
+        accepted = enqueueLocked(request);
     }
 
     if (!accepted) {
-        if (request.completion) {
-            request.completion(false,
-                               CanTransport::SendResult::Error,
-                               std::chrono::steady_clock::now());
-        }
+        completeDropped(request);
         ROS_WARN_STREAM_THROTTLE(
             1.0,
             "[DeviceRuntime] Dropping " << categoryName(request.category)
@@ -98,8 +52,74 @@ void DeviceRuntime::submit(const Request &request)
     cv_.notify_one();
 }
 
+bool DeviceRuntime::enqueueLocked(const Request &request)
+{
+    if (stopRequested_) {
+        switch (request.category) {
+        case Category::Control:
+            droppedControlCount_.fetch_add(1, std::memory_order_relaxed);
+            break;
+        case Category::Recover:
+            droppedRecoverCount_.fetch_add(1, std::memory_order_relaxed);
+            break;
+        case Category::Config:
+            droppedConfigCount_.fetch_add(1, std::memory_order_relaxed);
+            break;
+        case Category::Query:
+            droppedQueryCount_.fetch_add(1, std::memory_order_relaxed);
+            break;
+        }
+        return false;
+    }
+
+    if (request.category == Category::Control) {
+        enqueueControlLocked(request);
+        submittedCount_.fetch_add(1, std::memory_order_relaxed);
+        return true;
+    }
+
+    Queue &queue = queueFor(request.category);
+    if (queue.size() >= maxDepthFor(request.category)) {
+        switch (request.category) {
+        case Category::Control:
+            break;
+        case Category::Recover:
+            droppedRecoverCount_.fetch_add(1, std::memory_order_relaxed);
+            break;
+        case Category::Config:
+            droppedConfigCount_.fetch_add(1, std::memory_order_relaxed);
+            break;
+        case Category::Query:
+            droppedQueryCount_.fetch_add(1, std::memory_order_relaxed);
+            break;
+        }
+        return false;
+    }
+
+    queue.push_back(request);
+    submittedCount_.fetch_add(1, std::memory_order_relaxed);
+    return true;
+}
+
+void DeviceRuntime::completeDropped(const Request &request) const
+{
+    if (request.completion) {
+        request.completion(false,
+                           CanTransport::SendResult::Error,
+                           std::chrono::steady_clock::now());
+    }
+}
+
 void DeviceRuntime::enqueueControlLocked(const Request &request)
 {
+    for (auto &queued : controlQueue_) {
+        if (queued.frame.id == request.frame.id) {
+            queued = request;
+            evictedControlCount_.fetch_add(1, std::memory_order_relaxed);
+            return;
+        }
+    }
+
     if (controlQueue_.size() >= options_.maxControlQueueDepth) {
         // Evict the oldest control frame to make room for the newest.
         controlQueue_.pop_front();

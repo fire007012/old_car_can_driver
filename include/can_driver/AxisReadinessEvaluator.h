@@ -37,6 +37,7 @@ class AxisReadinessEvaluator {
 public:
     struct Config {
         std::int64_t feedbackFreshnessTimeoutNs{500000000LL};
+        std::uint32_t degradedTimeoutThreshold{kDefaultFeedbackDegradedTimeoutThreshold};
         std::uint32_t recoverConfirmCycles{2};
     };
 
@@ -97,8 +98,11 @@ public:
         if (!readiness.deviceReady || !readiness.feedbackSeen) {
             return "Feedback offline.";
         }
-        if (!readiness.feedbackReady) {
+        if (readiness.degraded) {
             return "Feedback degraded.";
+        }
+        if (!readiness.feedbackFresh) {
+            return "Feedback stale.";
         }
         if (!readiness.faultKnown) {
             return "Fault state unknown.";
@@ -144,7 +148,10 @@ private:
         readiness.intent = intent;
         readiness.deviceReady = (deviceHealth == nullptr) ? true : deviceHealth->transportReady;
         readiness.feedbackSeen = feedback.feedbackSeen;
-        readiness.degraded = feedback.degraded || feedback.consecutiveTimeoutCount > 0;
+        readiness.degraded = feedback.degraded ||
+                             feedback.consecutiveTimeoutCount >=
+                                 std::max<std::uint32_t>(1u,
+                                                         config_.degradedTimeoutThreshold);
         readiness.fault = feedback.fault;
         readiness.faultKnown = feedback.faultValid;
         readiness.enabled = feedback.enabled;

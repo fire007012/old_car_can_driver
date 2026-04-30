@@ -319,7 +319,7 @@ TEST(AxisReadinessEvaluatorTest, PpAxisReportsDegradedAndFaultFactsOnUnhealthyPa
     EXPECT_FALSE(can_driver::AxisReadinessEvaluator::ReadyForEnable(degraded));
     EXPECT_FALSE(can_driver::AxisReadinessEvaluator::ReadyForRun(degraded));
     EXPECT_EQ(can_driver::AxisReadinessEvaluator::DescribeBlockReason(degraded),
-              "Feedback degraded.");
+              "Feedback stale.");
 
     feedback.lastRxSteadyNs = nowNs;
     feedback.fault = true;
@@ -812,7 +812,7 @@ TEST(LifecycleDriverOpsTest, MotionHealthyRequiresReadyDeviceAndClearedFaults)
     EXPECT_TRUE(detail.empty());
 }
 
-TEST(LifecycleDriverOpsTest, MotionHealthyUsesSharedStateDegradationBeforeProtocolFallback)
+TEST(LifecycleDriverOpsTest, MotionHealthyToleratesBriefSharedStateTimeouts)
 {
     auto deviceManager = std::make_shared<FakeDeviceManager>();
     MotorActionExecutor executor(deviceManager);
@@ -835,6 +835,37 @@ TEST(LifecycleDriverOpsTest, MotionHealthyUsesSharedStateDegradationBeforeProtoc
             feedback->faultValid = true;
             feedback->lastRxSteadyNs = can_driver::SharedDriverSteadyNowNs();
             feedback->consecutiveTimeoutCount = 2;
+        });
+
+    std::string detail;
+    EXPECT_TRUE(ops.motionHealthy(&detail));
+    EXPECT_TRUE(detail.empty());
+}
+
+TEST(LifecycleDriverOpsTest, MotionHealthyUsesSharedStateDegradationBeforeProtocolFallback)
+{
+    auto deviceManager = std::make_shared<FakeDeviceManager>();
+    MotorActionExecutor executor(deviceManager);
+    can_driver::LifecycleDriverOps ops(deviceManager, &executor);
+    ops.setTargets({
+        MotorActionExecutor::Target{"joint_a", "fake0", CanType::MT, static_cast<MotorID>(0x141)},
+    });
+
+    deviceManager->sharedState()->mutateDeviceHealth(
+        "fake0",
+        [](can_driver::SharedDriverState::DeviceHealthState *health) {
+            health->transportReady = true;
+        });
+    deviceManager->sharedState()->mutateAxisFeedback(
+        can_driver::MakeAxisKey("fake0", CanType::MT, static_cast<MotorID>(0x141)),
+        [](can_driver::SharedDriverState::AxisFeedbackState *feedback) {
+            feedback->feedbackSeen = true;
+            feedback->enabled = true;
+            feedback->enabledValid = true;
+            feedback->faultValid = true;
+            feedback->lastRxSteadyNs = can_driver::SharedDriverSteadyNowNs();
+            feedback->consecutiveTimeoutCount =
+                can_driver::kDefaultFeedbackDegradedTimeoutThreshold;
         });
 
     std::string detail;
@@ -882,6 +913,40 @@ TEST(LifecycleDriverOpsTest, MotionHealthyAcceptsTransientSharedStateDegradation
     EXPECT_TRUE(ops.motionHealthy(&detail));
     EXPECT_TRUE(detail.empty());
     recover.join();
+}
+
+TEST(LifecycleDriverOpsTest, MotionHealthySnapshotDoesNotWaitForStaleFeedbackRecovery)
+{
+    auto deviceManager = std::make_shared<FakeDeviceManager>();
+    MotorActionExecutor executor(deviceManager);
+    can_driver::LifecycleDriverOps ops(deviceManager, &executor);
+    ops.setTargets({
+        MotorActionExecutor::Target{"joint_a", "fake0", CanType::MT, static_cast<MotorID>(0x141)},
+    });
+    ops.setFeedbackFreshnessTimeoutNs(1000000LL);
+
+    const auto key = can_driver::MakeAxisKey("fake0", CanType::MT, static_cast<MotorID>(0x141));
+    deviceManager->sharedState()->mutateDeviceHealth(
+        "fake0",
+        [](can_driver::SharedDriverState::DeviceHealthState *health) {
+            health->transportReady = true;
+        });
+    deviceManager->sharedState()->mutateAxisFeedback(
+        key,
+        [](can_driver::SharedDriverState::AxisFeedbackState *feedback) {
+            feedback->feedbackSeen = true;
+            feedback->enabled = true;
+            feedback->enabledValid = true;
+            feedback->faultValid = true;
+            feedback->lastRxSteadyNs = can_driver::SharedDriverSteadyNowNs() - 2000000LL;
+        });
+
+    const auto start = std::chrono::steady_clock::now();
+    std::string detail;
+    EXPECT_FALSE(ops.motionHealthySnapshot(&detail));
+    const auto elapsed = std::chrono::steady_clock::now() - start;
+    EXPECT_LT(elapsed, std::chrono::milliseconds(50));
+    EXPECT_EQ(detail, "Feedback stale.");
 }
 
 TEST(LifecycleDriverOpsTest, AnyFaultActiveUsesSharedStateFeedback)

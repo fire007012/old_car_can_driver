@@ -326,7 +326,10 @@ void DeviceManager::syncDeviceRefreshRuntimeLocked(const std::string &device)
                             const auto motorId = motorIds[index];
                             const auto plan = can_driver::BuildMtRefreshPlan(cycle, index, queryPressureActive);
                             for (std::size_t j = 0; j < plan.count && !issuedAny; ++j) {
-                                protocol->issueRefreshQuery(motorId, plan.items[j]);
+                                const bool issued = protocol->issueRefreshQuery(motorId, plan.items[j]);
+                                if (!issued) {
+                                    continue;
+                                }
                                 issuedAny = true;
                                 std::lock_guard<std::mutex> lock(runtime->scheduleMutex);
                                 runtime->mtMotorCursor = (index + 1) % motorIds.size();
@@ -339,7 +342,7 @@ void DeviceManager::syncDeviceRefreshRuntimeLocked(const std::string &device)
                                 runtime->pendingRefresh.observedLastRxSteadyNs =
                                     sharedAxisLastRxNs(sharedState, runtime->deviceName, CanType::MT, motorId);
                                 runtime->pendingRefresh.deadline = std::chrono::steady_clock::now() +
-                                                                   clampRefreshSleep(protocol->refreshSleepInterval());
+                                                                   clampRefreshSleep(protocol->readResponseTimeout());
                                 runtime->pendingRefresh.active = true;
                                 runtime->protocolRoundRobinCursor = (static_cast<std::size_t>(AttemptedProtocol::Pp));
                             }

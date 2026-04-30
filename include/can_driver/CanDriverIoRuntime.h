@@ -34,6 +34,7 @@ public:
         bool safetyRequireEnabledForMotion{true};
         double maxPositionStepRad{0.0};
         bool safetyHoldAfterDeviceRecover{true};
+        std::int64_t feedbackFreshnessTimeoutNs{AxisReadinessEvaluator::Config{}.feedbackFreshnessTimeoutNs};
     };
 
     struct PublishResult {
@@ -263,7 +264,7 @@ public:
                                         group.protocol,
                                         preparedCommandBuffer[index].motorId),
                             &feedback) ||
-                        !sharedFeedbackFresh(feedback, nowNs)) {
+                        !sharedFeedbackFresh(feedback, nowNs, config.feedbackFreshnessTimeoutNs)) {
                         continue;
                     }
 
@@ -280,6 +281,7 @@ public:
             }
 
             std::lock_guard<std::mutex> devLock(*devMutex);
+
             for (const std::size_t index : group.jointIndices) {
                 const auto &prepared = preparedCommandBuffer[index];
                 if (!prepared.valid || !(*commandValidBuffer)[index]) {
@@ -380,7 +382,9 @@ public:
         const IDeviceManager &deviceManager,
         const std::vector<CanDriverDeviceProtocolGroup> &groups,
         const std::deque<CanDriverJointConfig> &joints,
-        std::mutex *jointStateMutex)
+        std::mutex *jointStateMutex,
+        std::int64_t feedbackFreshnessTimeoutNs =
+            AxisReadinessEvaluator::Config{}.feedbackFreshnessTimeoutNs)
     {
         PublishResult result;
         result.messages.reserve(joints.size());
@@ -428,7 +432,8 @@ public:
                                         : can_driver::MotorState::MODE_UNKNOWN;
                     snapshot.statusValid = feedback.enabledValid && feedback.faultValid;
                     snapshot.modeValid = feedback.modeValid;
-                    snapshot.feedbackFresh = sharedFeedbackFresh(feedback, nowNs);
+                    snapshot.feedbackFresh = sharedFeedbackFresh(
+                        feedback, nowNs, feedbackFreshnessTimeoutNs);
                 }
             }
         }
@@ -479,17 +484,18 @@ private:
     }
 
     static bool sharedFeedbackFresh(const SharedDriverState::AxisFeedbackState &feedback,
-                                    std::int64_t nowNs)
+                                    std::int64_t nowNs,
+                                    std::int64_t feedbackFreshnessTimeoutNs =
+                                        AxisReadinessEvaluator::Config{}.feedbackFreshnessTimeoutNs)
     {
         if (!feedback.feedbackSeen || feedback.lastRxSteadyNs <= 0) {
             return false;
         }
 
-        const AxisReadinessEvaluator::Config config;
-        if (config.feedbackFreshnessTimeoutNs <= 0 || nowNs <= feedback.lastRxSteadyNs) {
+        if (feedbackFreshnessTimeoutNs <= 0 || nowNs <= feedback.lastRxSteadyNs) {
             return true;
         }
-        return (nowNs - feedback.lastRxSteadyNs) <= config.feedbackFreshnessTimeoutNs;
+        return (nowNs - feedback.lastRxSteadyNs) <= feedbackFreshnessTimeoutNs;
     }
 
     static double clampWithJointLimits(const CanDriverJointConfig &joint, double cmdValue)

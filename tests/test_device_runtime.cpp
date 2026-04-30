@@ -185,8 +185,6 @@ TEST_F(DeviceRuntimeTest, ControlQueueEvictsOldestWhenFull)
     options.maxControlQueueDepth = 2;
     DeviceRuntime runtime(transport, "test_can0", options);
 
-    // Submit 3 control frames into a queue of depth 2.
-    // The oldest (0x01) should be evicted.
     runtime.submit({makeFrame(0x01), CanTxDispatcher::Category::Control, "old"});
     runtime.submit({makeFrame(0x02), CanTxDispatcher::Category::Control, "mid"});
     runtime.submit({makeFrame(0x03), CanTxDispatcher::Category::Control, "new"});
@@ -196,13 +194,43 @@ TEST_F(DeviceRuntimeTest, ControlQueueEvictsOldestWhenFull)
 
     const auto frames = transport->snapshotFrames();
     ASSERT_EQ(frames.size(), 2u);
-    // Oldest was evicted, we should see mid then new.
     EXPECT_EQ(frames[0].id, 0x02u);
     EXPECT_EQ(frames[1].id, 0x03u);
 
     const auto stats = runtime.snapshotStats();
     EXPECT_EQ(stats.evictedControl, 1u);
-    // The new frame was NOT dropped — it was accepted. droppedControl should be 0.
+    EXPECT_EQ(stats.droppedControl, 0u);
+}
+
+TEST_F(DeviceRuntimeTest, ControlQueueReplacesOlderFrameForSameCanId)
+{
+    auto transport = std::make_shared<MockTransport>();
+    DeviceRuntime::Options options;
+    options.autostart = false;
+    DeviceRuntime runtime(transport, "test_can0", options);
+
+    auto oldLeft = makeFrame(0x141);
+    oldLeft.data[0] = 0x01;
+    auto right = makeFrame(0x142);
+    right.data[0] = 0x02;
+    auto newLeft = makeFrame(0x141);
+    newLeft.data[0] = 0x03;
+
+    runtime.submit({oldLeft, CanTxDispatcher::Category::Control, "old_left"});
+    runtime.submit({right, CanTxDispatcher::Category::Control, "right"});
+    runtime.submit({newLeft, CanTxDispatcher::Category::Control, "new_left"});
+
+    runtime.start();
+    ASSERT_TRUE(runtime.waitUntilIdleFor(std::chrono::milliseconds(200)));
+
+    const auto frames = transport->snapshotFrames();
+    ASSERT_EQ(frames.size(), 2u);
+    EXPECT_EQ(frames[0].id, 0x141u);
+    EXPECT_EQ(frames[0].data[0], 0x03u);
+    EXPECT_EQ(frames[1].id, 0x142u);
+
+    const auto stats = runtime.snapshotStats();
+    EXPECT_EQ(stats.evictedControl, 1u);
     EXPECT_EQ(stats.droppedControl, 0u);
 }
 
@@ -211,10 +239,9 @@ TEST_F(DeviceRuntimeTest, BackpressureCountedInStats)
     auto transport = std::make_shared<MockTransport>();
     DeviceRuntime::Options options;
     options.autostart = false;
-    options.maxBackpressureRetries = 100; // high so we don't trigger sleep in test
+    options.maxBackpressureRetries = 100;
     DeviceRuntime runtime(transport, "test_can0", options);
 
-    // First frame will fail with backpressure.
     transport->setNextResult(CanTransport::SendResult::Backpressure);
     runtime.submit({makeFrame(0x01), CanTxDispatcher::Category::Control, "bp_frame"});
 
@@ -224,7 +251,6 @@ TEST_F(DeviceRuntimeTest, BackpressureCountedInStats)
     const auto stats = runtime.snapshotStats();
     EXPECT_EQ(stats.sendBackpressure, 1u);
     EXPECT_EQ(stats.sent, 0u);
-    // Frame was submitted but not successfully sent.
     EXPECT_EQ(stats.submitted, 1u);
 }
 
@@ -298,7 +324,6 @@ TEST_F(DeviceRuntimeTest, MixedResultsCountedCorrectly)
     options.maxBackpressureRetries = 100;
     DeviceRuntime runtime(transport, "test_can0", options);
 
-    // Queue: control (will fail BP), query (will succeed).
     runtime.submit({makeFrame(0x01), CanTxDispatcher::Category::Control, "will_fail"});
     runtime.submit({makeFrame(0x02), CanTxDispatcher::Category::Query, "will_ok"});
     transport->queueResult(CanTransport::SendResult::Backpressure);

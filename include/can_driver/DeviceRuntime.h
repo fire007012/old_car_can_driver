@@ -22,7 +22,6 @@ public:
         std::size_t maxRecoverQueueDepth{128};
         std::size_t maxConfigQueueDepth{128};
         std::size_t maxQueryQueueDepth{64};
-
         /// Maximum consecutive backpressure events before the worker sleeps.
         std::size_t maxBackpressureRetries{3};
         /// How long to sleep after maxBackpressureRetries consecutive EAGAIN.
@@ -72,6 +71,8 @@ private:
     void noteSharedSendResult(CanTransport::SendResult result);
     bool allQueuesEmptyLocked() const;
     bool popNextLocked(Request *request);
+    bool enqueueLocked(const Request &request);
+    void completeDropped(const Request &request) const;
     Queue &queueFor(Category category);
     const Queue &queueFor(Category category) const;
     std::size_t maxDepthFor(Category category) const;

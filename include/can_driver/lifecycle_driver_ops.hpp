@@ -38,8 +38,10 @@ public:
     Result recoverAll() const;
     Result shutdownAll(bool force) const;
     bool enableHealthy(std::string *detail) const;
+    bool enableHealthySnapshot(std::string *detail) const;
     bool anyFaultActive() const;
     bool motionHealthy(std::string *detail) const;
+    bool motionHealthySnapshot(std::string *detail) const;
 
 private:
     struct AxisRecoverTracker {

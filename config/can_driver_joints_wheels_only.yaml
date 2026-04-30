@@ -1,0 +1,29 @@
+# Low-level integration overlay for wheel-only tests.
+# Scope: front wheel MT joints on can0.
+
+can_driver_node:
+  # Wheel-only field test profile: keep MT status polling conservative so
+  # command frames are not disturbed by repeated 0x9C timeout/backoff cycles.
+  motor_query_hz: 2.0
+  startup_probe_query_hz: 2.0
+  refresh_inter_frame_gap_sec: 0.005
+  safety_feedback_freshness_timeout_sec: 3.0
+
+  joints:
+    - name: left_front_wheel_joint
+      motor_id: 0x141
+      protocol: MT
+      can_device: can0
+      control_mode: velocity
+      position_scale: 1.7453292519943296e-04
+      velocity_scale: 1.7453292519943296e-04
+      direction_sign: 1.0
+
+    - name: right_front_wheel_joint
+      motor_id: 0x142
+      protocol: MT
+      can_device: can0
+      control_mode: velocity
+      position_scale: 1.7453292519943296e-04
+      velocity_scale: 1.7453292519943296e-04
+      direction_sign: -1.0
