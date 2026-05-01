@@ -6,5 +6,5 @@ CXX_FLAGS =   -std=c++11 -fPIC -pthread -DASIO_STANDALONE -DASIO_HAS_STD_CHRONO
 
 CXX_DEFINES = 
 
-CXX_INCLUDES = -I/home/rera/catkin_ws/src/can_driver/lib/innfos-cpp-sdk/example/../sdk/include -I/home/rera/catkin_ws/src/can_driver/lib/innfos-cpp-sdk/example/../sdk/include/asio -I/home/rera/catkin_ws/src/can_driver/lib/innfos-cpp-sdk/example/../sdk/include/serial/include 
+CXX_INCLUDES = -I/home/rera/catkin_ws/src/robot24/can_driver/lib/innfos-cpp-sdk/example/../sdk/include -I/home/rera/catkin_ws/src/robot24/can_driver/lib/innfos-cpp-sdk/example/../sdk/include/asio -I/home/rera/catkin_ws/src/robot24/can_driver/lib/innfos-cpp-sdk/example/../sdk/include/serial/include 
 

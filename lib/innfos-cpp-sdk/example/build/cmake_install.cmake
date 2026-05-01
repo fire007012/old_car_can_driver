@@ -1,4 +1,4 @@
-# Install script for directory: /home/rera/catkin_ws/src/can_driver/lib/innfos-cpp-sdk/example
+# Install script for directory: /home/rera/catkin_ws/src/robot24/can_driver/lib/innfos-cpp-sdk/example
 
 # Set the install prefix
 if(NOT DEFINED CMAKE_INSTALL_PREFIX)
@@ -45,5 +45,5 @@ endif()
 
 string(REPLACE ";" "\n" CMAKE_INSTALL_MANIFEST_CONTENT
        "${CMAKE_INSTALL_MANIFEST_FILES}")
-file(WRITE "/home/rera/catkin_ws/src/can_driver/lib/innfos-cpp-sdk/example/build/${CMAKE_INSTALL_MANIFEST}"
+file(WRITE "/home/rera/catkin_ws/src/robot24/can_driver/lib/innfos-cpp-sdk/example/build/${CMAKE_INSTALL_MANIFEST}"
      "${CMAKE_INSTALL_MANIFEST_CONTENT}")

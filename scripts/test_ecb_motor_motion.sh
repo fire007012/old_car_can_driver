@@ -44,7 +44,18 @@ require_cmd() {
 require_cmd rosservice
 require_cmd rostopic
 require_cmd rosparam
+require_cmd rossrv
 require_cmd python3
+
+ensure_can_driver_srv_type() {
+  if ! rossrv show can_driver/MotorCommand >/dev/null 2>&1; then
+    echo "[ECB-TEST][ERR] cannot load ROS service type can_driver/MotorCommand." >&2
+    echo "[ECB-TEST][ERR] Please build/source the workspace in this terminal:" >&2
+    echo "[ECB-TEST][ERR]   cd /home/rera/catkin_ws && catkin build can_driver && source devel/setup.bash" >&2
+    echo "[ECB-TEST][ERR] If you use catkin_make: cd /home/rera/catkin_ws && catkin_make --pkg can_driver && source devel/setup.bash" >&2
+    exit 2
+  fi
+}
 
 ensure_ros_online() {
   # 这里用 rosservice list 作为 master 存活探针，失败就直接退出，
@@ -54,6 +65,8 @@ ensure_ros_online() {
     exit 2
   fi
 }
+
+ensure_can_driver_srv_type
 
 resolve_ecb_joint_and_motor() {
   local req_motor_id="$1"

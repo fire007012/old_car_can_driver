@@ -1131,6 +1131,45 @@ TEST(LifecycleDriverOpsTest, MotionHealthyAcceptsPpDesiredModeWhenModeFeedbackPe
     EXPECT_TRUE(detail.empty());
 }
 
+TEST(LifecycleDriverOpsTest, MotionHealthyAcceptsEcbDesiredModeWhenModeFeedbackPending)
+{
+    auto deviceManager = std::make_shared<FakeDeviceManager>();
+    MotorActionExecutor executor(deviceManager);
+    can_driver::LifecycleDriverOps ops(deviceManager, &executor);
+    ops.setTargets({
+        MotorActionExecutor::Target{"ecb_joint_02", "ecb://192.168.1.30", CanType::ECB, static_cast<MotorID>(0x02)},
+    });
+
+    const auto key = can_driver::MakeAxisKey("ecb://192.168.1.30", CanType::ECB, static_cast<MotorID>(0x02));
+    deviceManager->sharedState()->mutateDeviceHealth(
+        "ecb://192.168.1.30",
+        [](can_driver::SharedDriverState::DeviceHealthState *health) {
+            health->transportReady = true;
+        });
+    deviceManager->sharedState()->mutateAxisFeedback(
+        key,
+        [](can_driver::SharedDriverState::AxisFeedbackState *feedback) {
+            feedback->feedbackSeen = true;
+            feedback->enabled = true;
+            feedback->enabledValid = true;
+            feedback->faultValid = true;
+            feedback->modeValid = false;
+            feedback->lastRxSteadyNs = can_driver::SharedDriverSteadyNowNs();
+        });
+    deviceManager->sharedState()->mutateAxisCommand(
+        key,
+        [](can_driver::SharedDriverState::AxisCommandState *command) {
+            command->valid = true;
+            command->desiredMode = CanProtocol::MotorMode::Position;
+            command->desiredModeValid = true;
+        });
+    deviceManager->sharedState()->setAxisIntent(key, can_driver::AxisIntent::Run);
+
+    std::string detail;
+    EXPECT_TRUE(ops.motionHealthy(&detail));
+    EXPECT_TRUE(detail.empty());
+}
+
 TEST(LifecycleDriverOpsTest, RecoverAllWaitsForAxisReadinessRecoveryConfirmation)
 {
     auto deviceManager = std::make_shared<FakeDeviceManager>();

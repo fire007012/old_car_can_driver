@@ -6,4 +6,4 @@ CMakeFiles/01_lookupActuators.dir/src/basic/01_lookupActuators.cpp.o
  ../../sdk/include/actuatorcontroller.h
  ../../sdk/include/actuatorcontroller_global.h
  ../../sdk/include/actuatordefine.h
- /home/rera/catkin_ws/src/can_driver/lib/innfos-cpp-sdk/example/src/basic/01_lookupActuators.cpp
+ /home/rera/catkin_ws/src/robot24/can_driver/lib/innfos-cpp-sdk/example/src/basic/01_lookupActuators.cpp

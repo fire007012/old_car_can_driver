@@ -235,6 +235,7 @@ catkin_install_python(PROGRAMS
 
 install(PROGRAMS
   scripts/cansend_mt_141_142_velocity.sh
+  scripts/socketcan_boot_setup.sh
   DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
 )
 

@@ -881,7 +881,8 @@ bool LifecycleDriverOps::motionHealthyOnce(std::string *detail) const
                         feedback.enabledValid = true;
                     }
                 }
-                if ((target.protocol == CanType::MT || target.protocol == CanType::PP) &&
+                if ((target.protocol == CanType::MT || target.protocol == CanType::PP ||
+                     target.protocol == CanType::ECB) &&
                     !feedback.modeValid &&
                     commandPtr != nullptr &&
                     commandPtr->desiredModeValid) {

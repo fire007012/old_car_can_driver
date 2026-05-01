@@ -36,11 +36,11 @@ CSignal.hpp
 
 ../../sdk/include/actuatordefine.h
 
-/home/rera/catkin_ws/src/can_driver/lib/innfos-cpp-sdk/example/src/basic/01_lookupActuators.cpp
+/home/rera/catkin_ws/src/robot24/can_driver/lib/innfos-cpp-sdk/example/src/basic/01_lookupActuators.cpp
 iostream
 -
 actuatorcontroller.h
-/home/rera/catkin_ws/src/can_driver/lib/innfos-cpp-sdk/example/src/basic/actuatorcontroller.h
+/home/rera/catkin_ws/src/robot24/can_driver/lib/innfos-cpp-sdk/example/src/basic/actuatorcontroller.h
 thread
 -
 signal.h
